@@ -175,6 +175,10 @@ model notebooks {
   emprestado_setor          setores?               @relation("EmprestimoSetor", fields: [emprestado_setor_id], references: [id], onUpdate: NoAction)
   localidade_rel            localidades?           @relation(fields: [localidade_id], references: [id], onUpdate: NoAction)
   setor_rel                 setores?               @relation(fields: [setor_id], references: [id], onUpdate: NoAction)
+  checklist_ultima_id       String?                @db.Uuid
+  checklist_tecnico_id      String?                @db.Uuid
+  checklist_revisor_id      String?                @db.Uuid
+  checklist_revisado_em     DateTime?              @db.Timestamptz(6)
 
   @@index([emprestado_colaborador_id], map: "idx_notebooks_emprestado_colab")
   @@index([localidade_id], map: "idx_notebooks_localidade_id")
@@ -194,6 +198,10 @@ model aparelhos {
   alocacoes      alocacoes_aparelhos[]
   localidade_rel localidades?          @relation(fields: [localidade_id], references: [id], onUpdate: NoAction)
   setor_rel      setores?              @relation(fields: [setor_id], references: [id], onUpdate: NoAction)
+  checklist_ultima_id   String?        @db.Uuid
+  checklist_tecnico_id  String?        @db.Uuid
+  checklist_revisor_id  String?        @db.Uuid
+  checklist_revisado_em DateTime?      @db.Timestamptz(6)
 
   @@index([localidade_id], map: "idx_aparelhos_localidade_id")
 }
@@ -269,6 +277,7 @@ model racks {
   checklist_tecnico_id String? @db.Uuid
   checklist_revisor_id String? @db.Uuid
   checklist_validado_em DateTime? @db.Timestamptz(6)
+  checklist_revisado_em DateTime? @db.Timestamptz(6)
   checklist_solicitacoes checklists_validacao_solicitacoes[]
   checklist_rack_respostas checklists_validacao_racks_respostas[]
 
@@ -368,6 +377,9 @@ model checklists_validacao_solicitacoes {
   tipo_solicitacao        String
   setor_id                String?   @db.Uuid
   rack_id                 String?   @db.Uuid
+  restringir_impressoras  Boolean   @default(false)
+  impressora_ids          String[]  @default([]) @db.Uuid
+  itens_escopo            String[]  @default([])
   status                  String    @default("aberta")
   assumido_por            String?   @db.Uuid
   assumido_em             DateTime? @db.Timestamptz(6)

@@ -616,11 +616,11 @@ export function buildChecklistOpenApiSpec(origin?: string) {
       },
       schemas: {
         StatusChecklist: { type: 'string', enum: ['aberto', 'finalizado'] },
-        TipoSolicitacao: { type: 'string', enum: ['SETOR', 'RACK'] },
+        TipoSolicitacao: { type: 'string', enum: ['SETOR', 'RACK', 'ESTOQUE'] },
         StatusSolicitacao: { type: 'string', enum: ['aberta', 'assumida', 'finalizada', 'revisada'] },
         PlannerStatus: { type: 'string', enum: ['pendente', 'assumido', 'concluido'] },
         StatusRevisao: { type: 'string', enum: ['pendente', 'aprovado', 'recusado', 'parcial'] },
-        TipoItem: { type: 'string', enum: ['MAQUINA', 'RAMAL', 'MONITOR', 'IMPRESSORA'] },
+        TipoItem: { type: 'string', enum: ['MAQUINA', 'RAMAL', 'MONITOR', 'IMPRESSORA', 'NOTEBOOK', 'APARELHO'] },
         TipoDiff: { type: 'string', enum: ['sem_divergencia', 'alterado', 'novo', 'ausente', 'vinculo_divergente'] },
         ChecklistSolicitacaoExterna: {
           type: 'object',

@@ -31,6 +31,7 @@ import { usePermission } from '@/hooks/use-permission'
 import { useSolicitacaoInventarioConfirm } from '@/components/solicitacoes-inventario/solicitacao-confirm-provider'
 import { writePendingInspectPreview } from '@/lib/navigation-context'
 import { updatePedidoMaloteAfterSubmit, withPedidoMaloteContext } from '@/lib/solicitacoes-inventario-client'
+import { UltimaRevisaoButton } from '@/components/checklists/ultima-revisao-popup'
 
 type MonitorRow = {
   id: string
@@ -709,6 +710,12 @@ export default function MonitoresPage() {
       header: 'Origem',
       enableSorting: false,
       cell: ({ row }) => row.original.criado_via_checklist ? 'Checklist' : 'Manual',
+    },
+    {
+      id: 'ultima_revisao',
+      header: 'Última revisão',
+      enableSorting: false,
+      cell: ({ row }) => <UltimaRevisaoButton tipo='MONITOR' id={row.original.id} revisadoEm={row.original.checklist_revisado_em} />,
     },
     {
       id: 'acoes',

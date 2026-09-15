@@ -47,6 +47,9 @@ export interface Colaborador {
 
 export interface Maquina {
   id: string
+  /** Campo padrão de última revisão (checklist). */
+  checklist_revisado_em?: string | null
+  checklist_ultima_id?: string | null
   nome_host: string | null
   identificador: string | null
   fabricante: string | null
@@ -72,6 +75,9 @@ export interface Maquina {
 
 export interface Notebook {
   id: string
+  /** Campo padrão de última revisão (checklist). */
+  checklist_revisado_em?: string | null
+  checklist_ultima_id?: string | null
   modelo: string | null
   fabricante: string | null
   categoria: 'Administrativa' | 'Academica' | null
@@ -99,6 +105,9 @@ export interface Notebook {
 
 export interface Aparelho {
   id: string
+  /** Campo padrão de última revisão (checklist). */
+  checklist_revisado_em?: string | null
+  checklist_ultima_id?: string | null
   modelo: string | null
   tipo: number | null
   chip: boolean | null
@@ -117,6 +126,9 @@ export interface Aparelho {
 
 export interface Impressora {
   id: string
+  /** Campo padrão de última revisão (checklist). */
+  checklist_revisado_em?: string | null
+  checklist_ultima_id?: string | null
   nome_host: string | null
   fabricante: string | null
   modelo: string | null
@@ -138,6 +150,9 @@ export interface Impressora {
 
 export interface Ramal {
   id: string
+  /** Campo padrão de última revisão (checklist). */
+  checklist_revisado_em?: string | null
+  checklist_ultima_id?: string | null
   numero_ramal: string | null
   setor_id?:   string | null
   setor_nome?: string | null
@@ -159,6 +174,9 @@ export interface Ramal {
 
 export interface Rack {
   id: string
+  /** Campo padrão de última revisão (checklist). */
+  checklist_revisado_em?: string | null
+  checklist_ultima_id?: string | null
   nome_switch: string | null
   marca_switch: string | null
   localizacao: string | null

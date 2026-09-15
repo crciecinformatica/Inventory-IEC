@@ -135,9 +135,9 @@ export async function plannerConcluirSolicitacao(id: string, payload: any) {
   payload = normalizePlannerPayload(payload)
   const atual = await delegate('checklists_validacao_solicitacoes').findUnique({ where: { id }, include: { rack_resposta: true, _count: { select: { itens: true } } } })
   if (!atual) throw new ChecklistError('Solicitação não encontrada', 404)
-  const podeFinalizarInterno = atual.tipo_solicitacao === 'SETOR'
-    ? atual._count.itens > 0
-    : Boolean(atual.rack_resposta)
+  const podeFinalizarInterno = atual.tipo_solicitacao === 'RACK'
+    ? Boolean(atual.rack_resposta)
+    : atual._count.itens > 0
   const solicitacao = await delegate('checklists_validacao_solicitacoes').update({
     where: { id },
     data: {

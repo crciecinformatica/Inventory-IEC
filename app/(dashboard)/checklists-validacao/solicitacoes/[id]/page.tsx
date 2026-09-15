@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import {
@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Eye,
+  Laptop,
   ListChecks,
   Loader2,
   MessageSquare,
@@ -19,6 +20,7 @@ import {
   Save,
   Server,
   Send,
+  Smartphone,
   UserCheck,
   UserRound,
   Users,
@@ -33,18 +35,22 @@ import { ChecklistContextOverview, type ChecklistContextMetric } from '@/compone
 import { PlannerSyncBadge } from '@/components/checklists/checklist-overview-cards'
 import { LocalidadeSelect } from '@/components/modals/localidade-select'
 import { usePermission } from '@/hooks/use-permission'
+import { ChecklistEstoquePanel, type EstoquePrevisto, type TipoEstoque } from '@/components/checklists/checklist-estoque-panel'
 
 type Diff = { id: string; campo: string; valor_atual: unknown; valor_informado: unknown; tipo_diff: string; status_revisao: string }
 type Item = { id: string; tipo_item: string; referencia_id?: string | null; identificador_informado: string | null; dados_informados_json: Record<string, unknown>; status_revisao: string; diffs: Diff[] }
 type Cobertura = {
-  previsto: { maquinas: number; ramais: number; monitores: number; impressoras: number; racks: number; portas: number }
-  preenchido: { maquinas: number; ramais: number; monitores: number; impressoras: number; rack: number }
+  previsto: { maquinas: number; ramais: number; monitores: number; impressoras: number; notebooks?: number; aparelhos?: number; racks: number; portas: number }
+  preenchido: { maquinas: number; ramais: number; monitores: number; impressoras: number; notebooks?: number; aparelhos?: number; rack: number }
   percentual: number
 }
 type Solicitacao = {
   id: string
   checklist_validacao_id: string
-  tipo_solicitacao: 'SETOR' | 'RACK'
+  tipo_solicitacao: 'SETOR' | 'RACK' | 'ESTOQUE'
+  titulo?: string
+  itens_escopo?: string[]
+  estoque_previsto?: EstoquePrevisto | null
   status: string
   status_revisao: string
   planner_status: string
@@ -66,11 +72,13 @@ type Solicitacao = {
   rack_resposta: any
   comentarios?: ChecklistComentario[] | null
   cobertura?: Cobertura
+  restringir_impressoras?: boolean
+  impressoras_escopo?: Array<{ id: string; nome_host: string | null; endereco_ip: string | null; modelo: string | null }>
   checklist: { nome: string; localidade?: { id?: string; nome: string } }
 }
 type ChecklistComentario = { id?: string; autor_id?: string | null; autor_nome?: string | null; papel?: string | null; conteudo: string; created_at?: string | null }
 
-type TipoItem = 'MAQUINA' | 'RAMAL' | 'MONITOR' | 'IMPRESSORA'
+type TipoItem = 'MAQUINA' | 'RAMAL' | 'MONITOR' | 'IMPRESSORA' | 'NOTEBOOK' | 'APARELHO'
 type ModalMode = 'ESTACAO' | 'IMPRESSORA' | null
 type StationStep = 'maquina' | 'colaboradores' | 'ramal' | 'monitores'
 type SidebarKind = 'MONITOR' | 'RAMAL' | 'IMPRESSORA'
@@ -604,10 +612,24 @@ export default function ChecklistSolicitacaoPage() {
   const [commentDraft, setCommentDraft] = useState('')
   const [commentSending, setCommentSending] = useState(false)
   const [celebration, setCelebration] = useState<string | null>(null)
+  const escopo = data?.itens_escopo ?? ['MAQUINA', 'MONITOR', 'RAMAL', 'COLABORADOR', 'IMPRESSORA']
+  const inclui = (item: string) => escopo.includes(item)
+  const cpuNoEscopo = inclui('MAQUINA')
+  const estacaoNoEscopo = ['MAQUINA', 'MONITOR', 'RAMAL', 'COLABORADOR'].some(inclui)
+  const visibleStationSteps = stationSteps.filter(({ key }) => (
+    key === 'maquina'
+    || (key === 'colaboradores' && inclui('COLABORADOR'))
+    || (key === 'ramal' && inclui('RAMAL'))
+    || (key === 'monitores' && inclui('MONITOR'))
+  ))
 
+  const loadedIdRef = useRef<string | null>(null)
   const load = useCallback(async () => {
-    setLoading(true)
-    const res = await fetch(`/api/checklists-validacao-solicitacoes/${params.id}`)
+    // Só a primeira carga (ou troca de solicitação) mostra o placeholder; recargas após salvar
+    // atualizam os dados no lugar, sem desmontar a tela nem perder a rolagem.
+    const firstLoad = loadedIdRef.current !== params.id
+    if (firstLoad) setLoading(true)
+    const res = await fetch(`/api/checklists-validacao-solicitacoes/${params.id}`, { cache: 'no-store' })
     if (res.ok) {
       const json = await res.json()
       setData(json)
@@ -627,6 +649,7 @@ export default function ChecklistSolicitacaoPage() {
         setRackObs(json.rack_resposta?.observacoes ?? '')
       }
     }
+    loadedIdRef.current = params.id
     setLoading(false)
   }, [params.id])
 
@@ -925,16 +948,26 @@ export default function ChecklistSolicitacaoPage() {
     try {
       const isEditing = Boolean(editingItemId)
       const stationRef = stationForm.hostname.trim() || stationForm.patrimonio.trim()
-      const colaboradoresNomes = semColaborador ? 'Sem colaborador' : selectedColaboradores.map(item => item.nome).join(', ')
-      const ramalNumero = semRamal ? '' : (selectedRamal?.numero_ramal || ramalSearch.trim())
-      const hasColaboradorVinculo = !semColaborador && selectedColaboradores.length > 0
-      const hasRamalVinculo = !semRamal && ramalNumero.length > 0
-      const hasMonitorVinculo = !semMonitores && Array.from({ length: monitorCount }, (_, item) => item + 1).some(index => hasAnyValue([
+      if (!stationRef) {
+        setSaving(false)
+        setStationStep('maquina')
+        toast.warning('Informe o host ou o patrimônio da estação')
+        return
+      }
+      const colaboradoresNoEscopo = inclui('COLABORADOR')
+      const ramalNoEscopo = inclui('RAMAL')
+      const monitoresNoEscopo = inclui('MONITOR')
+      const colaboradoresNomes = !colaboradoresNoEscopo ? '' : semColaborador ? 'Sem colaborador' : selectedColaboradores.map(item => item.nome).join(', ')
+      const colaboradoresIds = colaboradoresNoEscopo ? selectedColaboradores.map(item => item.id).join(',') : ''
+      const ramalNumero = !ramalNoEscopo || semRamal ? '' : (selectedRamal?.numero_ramal || ramalSearch.trim())
+      const hasColaboradorVinculo = colaboradoresNoEscopo && !semColaborador && selectedColaboradores.length > 0
+      const hasRamalVinculo = ramalNoEscopo && !semRamal && ramalNumero.length > 0
+      const hasMonitorVinculo = monitoresNoEscopo && !semMonitores && Array.from({ length: monitorCount }, (_, item) => item + 1).some(index => hasAnyValue([
         stationForm[`monitor_${index}_patrimonio`],
         stationForm[`monitor_${index}_marca`],
         stationForm[`monitor_${index}_tamanho`],
       ]))
-      if (!hasColaboradorVinculo && !hasRamalVinculo && !forceEmptyStation) {
+      if ((colaboradoresNoEscopo || ramalNoEscopo) && !hasColaboradorVinculo && !hasRamalVinculo && !forceEmptyStation) {
         setSaving(false)
         toast.warning('Enviar estação sem vínculos?', {
           description: hasMonitorVinculo
@@ -952,21 +985,25 @@ export default function ChecklistSolicitacaoPage() {
       const maquina = cleanForm({
         patrimonio: stationForm.patrimonio,
         hostname: stationForm.hostname,
-        ip: stationForm.ip,
-        modelo: stationForm.modelo,
-        armazenamento: stationForm.armazenamento,
-        memoria: stationForm.memoria,
-        processador: stationForm.processador,
-        status_observado: stationForm.status_observado,
+        ...(cpuNoEscopo ? {
+          ip: stationForm.ip,
+          modelo: stationForm.modelo,
+          armazenamento: stationForm.armazenamento,
+          memoria: stationForm.memoria,
+          processador: stationForm.processador,
+          status_observado: stationForm.status_observado,
+        } : {}),
         colaboradores_estacao: colaboradoresNomes,
-        colaboradores_estacao_ids: selectedColaboradores.map(item => item.id).join(','),
+        colaboradores_estacao_ids: colaboradoresIds,
         alocacao_atual: colaboradoresNomes,
-        ramal_estacao: semRamal ? 'Sem ramal' : ramalNumero,
+        ramal_estacao: !ramalNoEscopo ? '' : semRamal ? 'Sem ramal' : ramalNumero,
         observacoes: stationForm.observacoes,
       })
-      await saveItem('MAQUINA', { ...maquina, estacao_ref: stationRef }, editingItemId)
+      await saveItem('MAQUINA', { ...maquina, estacao_ref: stationRef, ...(cpuNoEscopo ? {} : { somente_referencia: true }) }, editingItemId)
 
-      if (semRamal || !ramalNumero) {
+      if (!ramalNoEscopo) {
+        // Ramal fora do escopo: nada a registrar.
+      } else if (semRamal || !ramalNumero) {
         if (editingRamalItemId) await deleteItem(editingRamalItemId)
       } else {
         await saveItem('RAMAL', cleanForm({
@@ -975,16 +1012,16 @@ export default function ChecklistSolicitacaoPage() {
           alocacao: stationRef,
           estacao_ref: stationRef,
           colaboradores_estacao: colaboradoresNomes,
-          colaboradores_estacao_ids: selectedColaboradores.map(item => item.id).join(','),
+          colaboradores_estacao_ids: colaboradoresIds,
           observacoes: stationForm.ramal_observacoes,
         }), editingRamalItemId)
       }
 
-      if (semMonitores) {
+      if (monitoresNoEscopo && semMonitores) {
         for (const itemId of editingMonitorItemIds) await deleteItem(itemId)
       }
 
-      for (const index of semMonitores ? [] : Array.from({ length: monitorCount }, (_, item) => item + 1)) {
+      for (const index of !monitoresNoEscopo || semMonitores ? [] : Array.from({ length: monitorCount }, (_, item) => item + 1)) {
         const patrimonio = stationForm[`monitor_${index}_patrimonio`]
         const marca = stationForm[`monitor_${index}_marca`]
         const tamanho = stationForm[`monitor_${index}_tamanho`]
@@ -996,11 +1033,11 @@ export default function ChecklistSolicitacaoPage() {
           maquina_hostname: stationForm.hostname,
           estacao_ref: stationRef,
           colaboradores_estacao: colaboradoresNomes,
-          colaboradores_estacao_ids: selectedColaboradores.map(item => item.id).join(','),
+          colaboradores_estacao_ids: colaboradoresIds,
         }), editingMonitorItemIds[index - 1])
       }
 
-      if (!semMonitores) {
+      if (monitoresNoEscopo && !semMonitores) {
         for (const itemId of editingMonitorItemIds.slice(monitorCount)) await deleteItem(itemId)
       }
 
@@ -1073,7 +1110,7 @@ export default function ChecklistSolicitacaoPage() {
   }
 
   const itemsByType = useMemo(() => {
-    const grouped: Record<TipoItem, Item[]> = { MAQUINA: [], RAMAL: [], MONITOR: [], IMPRESSORA: [] }
+    const grouped: Record<TipoItem, Item[]> = { MAQUINA: [], RAMAL: [], MONITOR: [], IMPRESSORA: [], NOTEBOOK: [], APARELHO: [] }
     for (const item of data?.itens ?? []) grouped[item.tipo_item as TipoItem]?.push(item)
     return grouped
   }, [data])
@@ -1106,12 +1143,17 @@ export default function ChecklistSolicitacaoPage() {
   const printerExpected = coverage?.previsto.impressoras ?? 0
   const machineDone = coverage?.preenchido.maquinas ?? itemsByType.MAQUINA.length
   const printerDone = coverage?.preenchido.impressoras ?? itemsByType.IMPRESSORA.length
-  const coverageRows: Array<{ label: string; done: number; total: number; icon: LucideIcon }> = [
-    { label: 'Máquinas', done: machineDone, total: coverage?.previsto.maquinas ?? 0, icon: Monitor },
-    { label: 'Ramais', done: coverage?.preenchido.ramais ?? 0, total: coverage?.previsto.ramais ?? 0, icon: Phone },
-    { label: 'Monitores', done: coverage?.preenchido.monitores ?? 0, total: coverage?.previsto.monitores ?? 0, icon: Monitor },
-    { label: 'Impressoras', done: printerDone, total: printerExpected, icon: Printer },
-  ]
+  const coverageRows: Array<{ label: string; done: number; total: number; icon: LucideIcon }> = data?.tipo_solicitacao === 'ESTOQUE'
+    ? [
+      { label: 'Notebooks', done: coverage?.preenchido.notebooks ?? 0, total: coverage?.previsto.notebooks ?? 0, icon: Laptop, item: 'NOTEBOOK' },
+      { label: 'Aparelhos', done: coverage?.preenchido.aparelhos ?? 0, total: coverage?.previsto.aparelhos ?? 0, icon: Smartphone, item: 'APARELHO' },
+    ].filter(row => inclui(row.item))
+    : [
+      { label: 'Estações', done: machineDone, total: coverage?.previsto.maquinas ?? 0, icon: Monitor, item: 'ESTACAO' },
+      { label: 'Ramais', done: coverage?.preenchido.ramais ?? 0, total: coverage?.previsto.ramais ?? 0, icon: Phone, item: 'RAMAL' },
+      { label: 'Monitores', done: coverage?.preenchido.monitores ?? 0, total: coverage?.previsto.monitores ?? 0, icon: Monitor, item: 'MONITOR' },
+      { label: 'Impressoras', done: printerDone, total: printerExpected, icon: Printer, item: 'IMPRESSORA' },
+    ].filter(row => row.item === 'ESTACAO' ? estacaoNoEscopo : inclui(row.item))
   const rackTotalPorts = numericValue(rackForm.quantidade_portas)
   const rackUsedPorts = Math.min(rackTotalPorts || Number.MAX_SAFE_INTEGER, numericValue(rackForm.portas_em_uso))
   const rackFreePorts = Math.max(0, rackTotalPorts - rackUsedPorts)
@@ -1136,6 +1178,9 @@ export default function ChecklistSolicitacaoPage() {
   if (!data) return <div className="mx-auto max-w-[1500px] px-10 py-6 text-sm text-slate-500">Solicitação não encontrada.</div>
 
   const isClosed = data.status === 'finalizada' || data.status === 'revisada'
+  const printersInScope = inclui('IMPRESSORA') && (!data.restringir_impressoras || (data.impressoras_escopo?.length ?? 0) > 0 || itemsByType.IMPRESSORA.length > 0)
+  const tituloSolicitacao = data.titulo ?? data.setor_nome ?? data.rack_nome ?? 'Solicitação'
+  const tipoLabel = data.tipo_solicitacao === 'SETOR' ? 'Setor' : data.tipo_solicitacao === 'RACK' ? 'Rack' : 'Estoque'
   const assumirLabel = data.assumida_pelo_usuario
     ? 'Assumida por você'
     : data.assumida_por_outro
@@ -1161,7 +1206,7 @@ export default function ChecklistSolicitacaoPage() {
         <ChecklistNavPills className="hidden lg:block" items={[
           { label: 'Checklists', href: '/checklists-validacao' },
           { label: data.checklist?.nome ?? 'Checklist', href: `/checklists-validacao/${data.checklist_validacao_id}` },
-          { label: `${data.tipo_solicitacao === 'SETOR' ? 'Preenchimento setor' : 'Preenchimento rack'}` },
+          { label: `Preenchimento ${tipoLabel.toLowerCase()}` },
         ]} />
       )}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1176,7 +1221,7 @@ export default function ChecklistSolicitacaoPage() {
             </Link>
           )}
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-3xl">
-            {data.tipo_solicitacao === 'SETOR' ? 'Setor' : 'Rack'} · {data.setor_nome ?? data.rack_nome ?? 'Solicitação'}
+            {data.tipo_solicitacao === 'ESTOQUE' ? `${tituloSolicitacao} · ${data.checklist?.localidade?.nome ?? 'Unidade'}` : `${tipoLabel} · ${tituloSolicitacao}`}
           </h1>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
             {data.checklist?.nome ?? 'Checklist'} · {data.status}{data.tecnico_nome ? ` · ${data.tecnico_nome}` : ''}
@@ -1215,10 +1260,10 @@ export default function ChecklistSolicitacaoPage() {
         </div>
       </div>
 
-      {data.tipo_solicitacao === 'SETOR' && (
+      {data.tipo_solicitacao !== 'RACK' && (
         <ChecklistContextOverview
           className={mobileChecklistView === 'preview' ? 'block' : 'hidden lg:block'}
-          eyebrow="Overview do setor"
+          eyebrow={data.tipo_solicitacao === 'ESTOQUE' ? 'Overview do estoque' : 'Overview do setor'}
           title="Contexto da validação"
           description={`${data.status} · revisão ${data.status_revisao} · ${data.tecnico_nome ?? 'sem técnico'} · cobertura ${coverage?.percentual ?? 0}%`}
           metrics={solicitationOverviewMetrics}
@@ -1233,7 +1278,23 @@ export default function ChecklistSolicitacaoPage() {
         onSend={sendComment}
       />
 
-      {data.tipo_solicitacao === 'SETOR' ? (
+      {data.tipo_solicitacao === 'ESTOQUE' ? (
+        <div className={`${mobileChecklistView === 'fill' ? 'block' : 'hidden'} lg:block`}>
+          <ChecklistEstoquePanel
+            canEdit={canEditSolicitation}
+            escopo={escopo}
+            itens={data.itens}
+            podeEditar={Boolean(data.pode_editar)}
+            previsto={data.estoque_previsto}
+            onSave={(tipo: TipoEstoque, dados, itemId) => saveItem(tipo, dados, itemId)}
+            onDelete={deleteItem}
+            onChanged={async message => {
+              showCelebration(message)
+              await load()
+            }}
+          />
+        </div>
+      ) : data.tipo_solicitacao === 'SETOR' ? (
         <>
           <motion.section
             initial={false}
@@ -1252,29 +1313,51 @@ export default function ChecklistSolicitacaoPage() {
                       <p className="text-xs font-bold uppercase tracking-wide text-blue-600 dark:text-blue-300">Fluxo de campo</p>
                       <h2 className="mt-1 text-xl font-black tracking-tight text-slate-950 dark:text-white">Tarefas de validação</h2>
                       <p className="mt-1 max-w-xl text-sm leading-6 text-slate-500 dark:text-slate-400">
-                        Registre estações completas e impressoras encontradas no setor.
+                        {estacaoNoEscopo && printersInScope
+                          ? 'Registre as estações e as impressoras encontradas no setor.'
+                          : estacaoNoEscopo
+                            ? 'Registre as estações encontradas no setor.'
+                            : 'Registre as impressoras encontradas no setor.'}
                       </p>
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {[
+                          ['MAQUINA', 'CPU'],
+                          ['MONITOR', 'Monitor'],
+                          ['RAMAL', 'Ramal'],
+                          ['COLABORADOR', 'Colaborador'],
+                          ['IMPRESSORA', 'Impressoras'],
+                        ].map(([key, label]) => (
+                          <span
+                            key={key}
+                            className={`rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${inclui(key)
+                              ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-300'
+                              : 'border-slate-200 text-slate-400 line-through dark:border-slate-800'}`}
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-950/50">
+                    {estacaoNoEscopo && <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-950/50">
                       <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Estações</span>
                       <strong className="mt-0.5 block text-sm font-black text-slate-950 dark:text-white">{machineDone}/{machineExpected}</strong>
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-950/50">
+                    </div>}
+                    {printersInScope && <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-950/50">
                       <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Impressoras</span>
                       <strong className="mt-0.5 block text-sm font-black text-slate-950 dark:text-white">{printerDone}/{printerExpected}</strong>
-                    </div>
+                    </div>}
                   </div>
                 </div>
               </div>
 
               <motion.div layout className="grid gap-4 p-4 sm:p-5 xl:grid-cols-2">
-                <TaskCard
+                {estacaoNoEscopo && <TaskCard
                   active={activeTask === 'ESTACAO'}
                   color="text-blue-600"
-                  description="Máquina, ramal, colaboradores e monitores preenchidos como uma estação de trabalho."
+                  description={`${[cpuNoEscopo && 'CPU', inclui('RAMAL') && 'ramal', inclui('COLABORADOR') && 'colaboradores', inclui('MONITOR') && 'monitores'].filter(Boolean).join(', ')} preenchidos como uma estação de trabalho.`}
                   done={machineDone}
                   icon={Monitor}
                   onAdd={() => openModal('ESTACAO')}
@@ -1282,8 +1365,8 @@ export default function ChecklistSolicitacaoPage() {
                   pendingLabel={`${Math.max(0, machineExpected - machineDone)} estações pendentes`}
                   title="Estações de trabalho"
                   total={machineExpected}
-                />
-                <TaskCard
+                />}
+                {printersInScope && <TaskCard
                   active={activeTask === 'IMPRESSORA'}
                   color="text-emerald-600"
                   description="Impressoras continuam separadas para validar IP, rede, modelo e status."
@@ -1294,8 +1377,25 @@ export default function ChecklistSolicitacaoPage() {
                   pendingLabel={`${Math.max(0, printerExpected - printerDone)} impressoras pendentes`}
                   title="Impressoras do setor"
                   total={printerExpected}
-                />
+                />}
               </motion.div>
+              {data.restringir_impressoras && inclui('IMPRESSORA') && (
+                <div className="border-t border-slate-100 p-4 text-sm dark:border-slate-800 sm:p-5">
+                  <p className="flex items-center gap-2 font-semibold text-slate-700 dark:text-slate-200">
+                    <Printer className="h-4 w-4 text-emerald-600" />
+                    {printersInScope ? 'Impressoras selecionadas para este checklist' : 'Impressoras não fazem parte do escopo deste checklist'}
+                  </p>
+                  {printersInScope && (
+                    <ul className="mt-2 flex flex-wrap gap-2">
+                      {(data.impressoras_escopo ?? []).map(printer => (
+                        <li key={printer.id} className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200">
+                          {[printer.nome_host ?? printer.endereco_ip ?? 'Sem identificação', printer.modelo].filter(Boolean).join(' · ')}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="rounded-lg border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
@@ -1431,7 +1531,7 @@ export default function ChecklistSolicitacaoPage() {
                       { key: 'MONITOR' as SidebarKind, label: 'Monitores', icon: Monitor, total: itemsByType.MONITOR.length },
                       { key: 'RAMAL' as SidebarKind, label: 'Ramais', icon: Phone, total: itemsByType.RAMAL.length },
                       { key: 'IMPRESSORA' as SidebarKind, label: 'Impressoras', icon: Printer, total: itemsByType.IMPRESSORA.length },
-                    ].map(({ key, label, icon: Icon, total }) => (
+                    ].filter(({ key, total }) => inclui(key) || total > 0).map(({ key, label, icon: Icon, total }) => (
                       <button
                         key={key}
                         type="button"
@@ -1934,7 +2034,7 @@ export default function ChecklistSolicitacaoPage() {
                 </div>
 
                 <div className="mt-4 flex gap-2 overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-slate-800 dark:bg-slate-950/60">
-                  {stationSteps.map(({ key, icon: StepIcon, label }) => (
+                  {visibleStationSteps.map(({ key, icon: StepIcon, label }) => (
                     <button
                       key={key}
                       type="button"
@@ -1942,7 +2042,7 @@ export default function ChecklistSolicitacaoPage() {
                       className={`flex h-10 shrink-0 items-center justify-center gap-2 rounded-md px-3 text-sm font-semibold transition sm:flex-1 ${stationStep === key ? 'bg-white text-blue-700 shadow-sm dark:bg-slate-900 dark:text-blue-300' : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'}`}
                     >
                       <StepIcon className="h-4 w-4" />
-                      {label}
+                      {key === 'maquina' && !cpuNoEscopo ? 'Estação' : label}
                     </button>
                   ))}
                 </div>
@@ -1958,7 +2058,21 @@ export default function ChecklistSolicitacaoPage() {
                     transition={{ duration: 0.16 }}
                     className="min-h-full rounded-lg border border-slate-200 p-4 dark:border-slate-800"
                   >
-                    {stationStep === 'maquina' && (
+                    {stationStep === 'maquina' && !cpuNoEscopo && (
+                      <div className="space-y-4">
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Referência da estação</h3>
+                          <p className="text-xs text-slate-500">A CPU não faz parte deste check. Informe host ou patrimônio só para vincular os demais itens.</p>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <InputField field={{ key: 'hostname', label: 'Host', placeholder: 'Ex.: PC-SG-001' }} value={stationForm.hostname} onChange={value => setStationForm(current => ({ ...current, hostname: value }))} />
+                          <InputField field={{ key: 'patrimonio', label: 'Patrimônio', placeholder: 'Ex.: 123456' }} value={stationForm.patrimonio} onChange={value => setStationForm(current => ({ ...current, patrimonio: value }))} />
+                          <InputField field={{ key: 'observacoes', label: 'Observações gerais', placeholder: 'Contexto da estação.', span: 'full' }} value={stationForm.observacoes} onChange={value => setStationForm(current => ({ ...current, observacoes: value }))} />
+                        </div>
+                      </div>
+                    )}
+
+                    {stationStep === 'maquina' && cpuNoEscopo && (
                       <div className="space-y-4">
                         <div>
                           <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Dados da máquina</h3>

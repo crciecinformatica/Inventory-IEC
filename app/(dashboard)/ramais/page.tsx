@@ -19,6 +19,7 @@ import type { Ramal, PaginatedResponse } from '@/types'
 import { SetorSelect } from '@/components/modals/setor-select'
 import { LocalidadeSelect } from '@/components/modals/localidade-select'
 import { useInspectNavigation } from '@/hooks/use-inspect-navigation'
+import { UltimaRevisaoButton } from '@/components/checklists/ultima-revisao-popup'
 
 type ActiveOverviewFilter = OverviewFilter & {
   key: string
@@ -190,6 +191,12 @@ export default function RamaisPage() {
           </span>
         )
       },
+    },
+    {
+      id: 'ultima_revisao',
+      header: 'Última revisão',
+      enableSorting: false,
+      cell: ({ row }) => <UltimaRevisaoButton tipo='RAMAL' id={row.original.id} revisadoEm={row.original.checklist_revisado_em} fallbackDate={row.original.ultima_revisao} />,
     },
     {
       id: 'forum',

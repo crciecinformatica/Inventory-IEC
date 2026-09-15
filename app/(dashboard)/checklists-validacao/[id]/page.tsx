@@ -48,8 +48,8 @@ function aggregateCoverage(solicitacoes: ChecklistSolicitacaoResumo[]) {
       continue
     }
 
-    done += cobertura.preenchido.maquinas + cobertura.preenchido.ramais + cobertura.preenchido.monitores + cobertura.preenchido.impressoras
-    total += cobertura.previsto.maquinas + cobertura.previsto.ramais + cobertura.previsto.monitores + cobertura.previsto.impressoras
+    done += cobertura.preenchido.maquinas + cobertura.preenchido.ramais + cobertura.preenchido.monitores + cobertura.preenchido.impressoras + (cobertura.preenchido.notebooks ?? 0) + (cobertura.preenchido.aparelhos ?? 0)
+    total += cobertura.previsto.maquinas + cobertura.previsto.ramais + cobertura.previsto.monitores + cobertura.previsto.impressoras + (cobertura.previsto.notebooks ?? 0) + (cobertura.previsto.aparelhos ?? 0)
   }
 
   if (total > 0) return progressPercent(done, total)
@@ -63,6 +63,7 @@ function countStats(solicitacoes: ChecklistSolicitacaoResumo[]) {
     total: solicitacoes.length,
     setores: solicitacoes.filter(s => s.tipo_solicitacao === 'SETOR').length,
     racks: solicitacoes.filter(s => s.tipo_solicitacao === 'RACK').length,
+    estoque: solicitacoes.filter(s => s.tipo_solicitacao === 'ESTOQUE').length,
     pendentes: solicitacoes.filter(s => s.status === 'aberta').length,
     assumidas: solicitacoes.filter(s => s.status === 'assumida').length,
     finalizadas: solicitacoes.filter(s => s.status === 'finalizada' || s.status === 'revisada').length,
@@ -212,11 +213,14 @@ export default function ChecklistDetalhePage() {
   if (loading) return <div className="mx-auto max-w-[1500px] px-10 py-6 text-sm text-slate-500">Carregando checklist...</div>
   if (!checklist) return <div className="mx-auto max-w-[1500px] px-10 py-6 text-sm text-slate-500">Checklist não encontrado.</div>
 
-  const setores = checklist.solicitacoes.filter(s => s.tipo_solicitacao === 'SETOR')
+  const setores = checklist.solicitacoes.filter(s => s.tipo_solicitacao !== 'RACK')
   const racks = checklist.solicitacoes.filter(s => s.tipo_solicitacao === 'RACK')
   const mobileFilterScope = mobileOverviewView === 'setores' ? setores : mobileOverviewView === 'racks' ? racks : checklist.solicitacoes
   const filteredSolicitacoes = checklist.solicitacoes.filter(s => matchesOverviewStatus(s, statusFilter))
-  const filteredSetores = setores.filter(s => matchesOverviewStatus(s, statusFilter))
+  // Estoque aparece junto dos setores, antes deles.
+  const filteredSetores = setores
+    .filter(s => matchesOverviewStatus(s, statusFilter))
+    .sort((a, b) => Number(b.tipo_solicitacao === 'ESTOQUE') - Number(a.tipo_solicitacao === 'ESTOQUE'))
   const filteredRacks = racks.filter(s => matchesOverviewStatus(s, statusFilter))
   const progress = stats.total > 0 ? Math.round((stats.finalizadas / stats.total) * 100) : 0
   const filteredStats = countStats(filteredSolicitacoes)
@@ -316,7 +320,7 @@ export default function ChecklistDetalhePage() {
             <div>
               <h2 className="hidden text-base font-semibold text-slate-900 dark:text-white lg:block">Solicitações do checklist</h2>
               <p className="hidden text-sm text-slate-500 lg:block">
-                Exibindo {filteredSetores.length} setores e {filteredRacks.length} racks no filtro atual.
+                Exibindo {filteredStats.setores} setores, {filteredRacks.length} racks{stats.estoque ? ` e ${filteredStats.estoque} revisão de estoque` : ''} no filtro atual.
               </p>
               <div className="lg:hidden">
                 <p className="text-xs font-bold uppercase tracking-wide text-blue-600 dark:text-blue-300">{mobileOverviewView === 'racks' ? 'Racks' : 'Setores'}</p>
@@ -335,7 +339,7 @@ export default function ChecklistDetalhePage() {
           </div>
         </div>
 
-        <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
+        <div className="grid items-start gap-5 xl:grid-cols-[1fr_340px]">
           <AnimatePresence mode="wait">
             <motion.div
               key={`setores-${statusFilter}`}
@@ -344,7 +348,7 @@ export default function ChecklistDetalhePage() {
               animate={{ opacity: mobileOverviewView === 'setores' ? 1 : 0.96, y: mobileOverviewView === 'setores' ? 0 : 8 }}
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.22, ease: 'easeOut' }}
-              className={`${mobileOverviewView === 'setores' ? 'grid' : 'hidden'} auto-rows-fr items-stretch gap-4 md:grid-cols-2 lg:grid 2xl:grid-cols-3`}
+              className={`${mobileOverviewView === 'setores' ? 'grid' : 'hidden'} auto-rows-fr content-start items-stretch gap-4 md:grid-cols-2 lg:grid 2xl:grid-cols-3`}
             >
               {filteredSetores.map(s => <SolicitacaoCard key={s.id} solicitacao={s} />)}
               {filteredSetores.length === 0 && (
@@ -359,13 +363,13 @@ export default function ChecklistDetalhePage() {
             initial={false}
             animate={{ opacity: mobileOverviewView === 'racks' ? 1 : 0.96, y: mobileOverviewView === 'racks' ? 0 : 8 }}
             transition={{ duration: 0.22, ease: 'easeOut' }}
-            className={`${mobileOverviewView === 'racks' ? 'block' : 'hidden'} rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 lg:block`}
+            className={`${mobileOverviewView === 'racks' ? 'block' : 'hidden'} rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 lg:block xl:sticky xl:top-6`}
           >
             <div className="border-b border-slate-100 p-4 dark:border-slate-800">
               <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white"><Server className="h-4 w-4 text-blue-500" />Racks</h3>
               <p className="mt-1 text-xs text-slate-500">{racks.length} solicitações por localidade</p>
             </div>
-            <div className="grid auto-rows-fr gap-3 p-3">
+            <div className="grid auto-rows-fr gap-3 p-3 xl:max-h-[calc(100vh-12rem)] xl:overflow-y-auto">
               <AnimatePresence>
                 {filteredRacks.map(s => <RackSidebarCard key={s.id} solicitacao={s} />)}
               </AnimatePresence>

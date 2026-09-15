@@ -27,10 +27,10 @@ import { LocalidadeSelect } from "@/components/modals/localidade-select";
 
 import { Search, Plus } from "lucide-react";
 
-import { formatDate } from "@/lib/utils";
 import { useInspectNavigation } from "@/hooks/use-inspect-navigation";
 
 import type { Notebook, PaginatedResponse } from "@/types";
+import { UltimaRevisaoButton } from "@/components/checklists/ultima-revisao-popup";
 
 type ActiveOverviewFilter = OverviewFilter & {
   key: string;
@@ -591,10 +591,14 @@ export default function NotebooksPage() {
         accessorKey: "data_revisao",
         header: "Última revisão",
 
-        cell: ({ row }) =>
-          formatDate(
-            row.original.data_revisao,
-          ),
+        cell: ({ row }) => (
+          <UltimaRevisaoButton
+            tipo="NOTEBOOK"
+            id={row.original.id}
+            revisadoEm={row.original.checklist_revisado_em}
+            fallbackDate={row.original.data_revisao}
+          />
+        ),
       },
 
       {

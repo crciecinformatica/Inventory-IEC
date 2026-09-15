@@ -2,21 +2,22 @@
 
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { AlertTriangle, CheckCircle2, ClipboardCheck, GitCompareArrows, ListChecks, Monitor, Phone, Printer, Server, UserRound } from 'lucide-react'
+import { AlertTriangle, Boxes, CheckCircle2, ClipboardCheck, GitCompareArrows, Laptop, ListChecks, Monitor, Phone, Printer, Server, Smartphone, UserRound } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ChecklistNavPills } from '@/components/checklists/checklist-nav-pills'
 import { ChecklistContextOverview, type ChecklistContextMetric } from '@/components/checklists/checklist-context-overview'
 
 type Cobertura = {
-  previsto: { maquinas: number; ramais: number; monitores: number; impressoras: number; racks: number; portas: number }
-  preenchido: { maquinas: number; ramais: number; monitores: number; impressoras: number; rack: number }
+  previsto: { maquinas: number; ramais: number; monitores: number; impressoras: number; notebooks?: number; aparelhos?: number; racks: number; portas: number }
+  preenchido: { maquinas: number; ramais: number; monitores: number; impressoras: number; notebooks?: number; aparelhos?: number; rack: number }
   percentual: number
 }
 
 type SolicitacaoRevisao = {
   id: string
   checklist_validacao_id: string
-  tipo_solicitacao: 'SETOR' | 'RACK'
+  tipo_solicitacao: 'SETOR' | 'RACK' | 'ESTOQUE'
+  titulo?: string
   status: string
   status_revisao: string
   atualizado_em: string | null
@@ -38,7 +39,7 @@ type SolicitacaoRevisao = {
 }
 
 type ReviewMode = 'pendentes' | 'revisadas'
-type AssetMode = 'SETOR' | 'RACK'
+type AssetMode = 'SETOR' | 'RACK' | 'ESTOQUE'
 
 function progressPercent(done: number, total: number) {
   if (total > 0) return Math.max(0, Math.min(100, Math.round((done / total) * 100)))
@@ -81,12 +82,17 @@ function CoveragePreview({ solicitacao }: { solicitacao: SolicitacaoRevisao }) {
     )
   }
 
-  const rows = [
-    ['Máquinas', cobertura.preenchido.maquinas, cobertura.previsto.maquinas, Monitor],
-    ['Ramais', cobertura.preenchido.ramais, cobertura.previsto.ramais, Phone],
-    ['Monitores', cobertura.preenchido.monitores, cobertura.previsto.monitores, Monitor],
-    ['Impressoras', cobertura.preenchido.impressoras, cobertura.previsto.impressoras, Printer],
-  ] as const
+  const rows = solicitacao.tipo_solicitacao === 'ESTOQUE'
+    ? [
+      ['Notebooks', cobertura.preenchido.notebooks ?? 0, cobertura.previsto.notebooks ?? 0, Laptop],
+      ['Aparelhos', cobertura.preenchido.aparelhos ?? 0, cobertura.previsto.aparelhos ?? 0, Smartphone],
+    ] as const
+    : [
+      ['Estações', cobertura.preenchido.maquinas, cobertura.previsto.maquinas, Monitor],
+      ['Ramais', cobertura.preenchido.ramais, cobertura.previsto.ramais, Phone],
+      ['Monitores', cobertura.preenchido.monitores, cobertura.previsto.monitores, Monitor],
+      ['Impressoras', cobertura.preenchido.impressoras, cobertura.previsto.impressoras, Printer],
+    ] as const
 
   return (
     <div className="grid grid-cols-2 gap-2">
@@ -101,10 +107,10 @@ function CoveragePreview({ solicitacao }: { solicitacao: SolicitacaoRevisao }) {
 }
 
 function ReviewCard({ solicitacao }: { solicitacao: SolicitacaoRevisao }) {
-  const title = solicitacao.setor_nome ?? solicitacao.rack_nome ?? 'Solicitação'
+  const title = solicitacao.titulo ?? solicitacao.setor_nome ?? solicitacao.rack_nome ?? 'Solicitação'
   const isRack = solicitacao.tipo_solicitacao === 'RACK'
   const percent = solicitacao.cobertura?.percentual ?? 0
-  const Icon = isRack ? Server : ClipboardCheck
+  const Icon = isRack ? Server : solicitacao.tipo_solicitacao === 'ESTOQUE' ? Boxes : ClipboardCheck
   const sentAt = solicitacao.finalizado_em ?? solicitacao.atualizado_em
   const decisionLabel = solicitacao.assimilada
     ? `Assimilado por ${solicitacao.assimilado_por_nome ?? 'administrador'}`
@@ -219,6 +225,7 @@ export default function ChecklistsRevisaoPage() {
       revisadas: revisadas.length,
       setores: solicitacoes.filter(s => s.tipo_solicitacao === 'SETOR').length,
       racks: solicitacoes.filter(s => s.tipo_solicitacao === 'RACK').length,
+      estoque: solicitacoes.filter(s => s.tipo_solicitacao === 'ESTOQUE').length,
     }
   }, [solicitacoes])
 
@@ -319,10 +326,10 @@ export default function ChecklistsRevisaoPage() {
             <div>
               <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Solicitações</p>
               <h2 className="mt-1 text-xl font-black text-white">
-                {assetMode === 'SETOR' ? 'Setores para revisar' : 'Racks para revisar'}
+                {assetMode === 'SETOR' ? 'Setores para revisar' : assetMode === 'RACK' ? 'Racks para revisar' : 'Estoques para revisar'}
               </h2>
               <p className="mt-1 text-sm text-slate-400">
-                {filtered.length} {assetMode === 'SETOR' ? 'setores' : 'racks'} no filtro atual.
+                {filtered.length} {assetMode === 'SETOR' ? 'setores' : assetMode === 'RACK' ? 'racks' : 'revisões de estoque'} no filtro atual.
               </p>
             </div>
             <div className="inline-flex w-full rounded-2xl border border-slate-800 bg-slate-950/60 p-1 sm:w-auto">
@@ -377,6 +384,12 @@ export default function ChecklistsRevisaoPage() {
                 <span className="flex items-center justify-between gap-3">
                   <span className="inline-flex items-center gap-2"><Server className="h-4 w-4" />Racks</span>
                   <span>{stats.racks}</span>
+                </span>
+              </FilterButton>
+              <FilterButton active={assetMode === 'ESTOQUE'} onClick={() => setAssetMode('ESTOQUE')}>
+                <span className="flex items-center justify-between gap-3">
+                  <span className="inline-flex items-center gap-2"><Boxes className="h-4 w-4" />Estoque</span>
+                  <span>{stats.estoque}</span>
                 </span>
               </FilterButton>
             </div>

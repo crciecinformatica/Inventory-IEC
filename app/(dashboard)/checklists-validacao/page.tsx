@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
   ArrowRight,
@@ -12,20 +12,18 @@ import {
   Clock3,
   Filter,
   ListChecks,
-  Loader2,
   MapPin,
   PackageCheck,
   Plus,
   Server,
   SlidersHorizontal,
-  X,
   type LucideIcon,
 } from 'lucide-react'
-import { LocalidadeSelect } from '@/components/modals/localidade-select'
 import { usePermission } from '@/hooks/use-permission'
 import { ChecklistNavPills } from '@/components/checklists/checklist-nav-pills'
 import { ChecklistMobileBottomNav } from '@/components/checklists/checklist-mobile-bottom-nav'
 import { ChecklistContextOverview, type ChecklistContextMetric } from '@/components/checklists/checklist-context-overview'
+import { ChecklistCreateModal } from '@/components/checklists/checklist-create-modal'
 
 type Checklist = {
   id: string
@@ -292,13 +290,7 @@ export default function ChecklistsValidacaoPage() {
   const [data, setData] = useState<Checklist[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
-  const [creatingChecklist, setCreatingChecklist] = useState(false)
-  const creatingChecklistRef = useRef(false)
   const [mobileSection, setMobileSection] = useState<MobileChecklistSection>('overview')
-  const [nome, setNome] = useState('')
-  const [localidadeId, setLocalidadeId] = useState<string | null>(null)
-  const [incluirRacks, setIncluirRacks] = useState(true)
-  const [dataInicio, setDataInicio] = useState(new Date().toISOString().slice(0, 10))
   const [localidadeFilter, setLocalidadeFilter] = useState('todas')
   const [periodFilter, setPeriodFilter] = useState<PeriodFilter>('todos')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('todos')
@@ -442,103 +434,15 @@ export default function ChecklistsValidacaoPage() {
     return views
   }, [isAdmin])
 
-  async function createChecklist(event: FormEvent) {
-    event.preventDefault()
-    if (creatingChecklistRef.current || !localidadeId) return
-
-    creatingChecklistRef.current = true
-    setCreatingChecklist(true)
-
-    try {
-      const res = await fetch('/api/checklists-validacao', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          nome: nome || defaultName,
-          localidade_id: localidadeId,
-          incluir_racks: incluirRacks,
-          data_inicio: dataInicio || null,
-        }),
-      })
-      if (res.ok) {
-        setShowCreate(false)
-        setMobileSection('checklists')
-        setNome('')
-        await load()
-      } else {
-        const json = await res.json().catch(() => ({}))
-        alert(json.error ?? 'Erro ao criar checklist')
-      }
-    } finally {
-      creatingChecklistRef.current = false
-      setCreatingChecklist(false)
-    }
+  async function handleCreated() {
+    setShowCreate(false)
+    setMobileSection('checklists')
+    await load()
   }
 
   function closeCreate() {
-    if (creatingChecklist) return
     setShowCreate(false)
     if (mobileSection === 'criar') setMobileSection('overview')
-  }
-
-  function renderCreateForm(scope: 'desktop' | 'mobile') {
-    return (
-      <motion.form
-        key={`create-checklist-${scope}`}
-        onSubmit={createChecklist}
-        initial={{ opacity: 0, y: scope === 'mobile' ? 12 : -8 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: scope === 'mobile' ? 12 : -8 }}
-        transition={{ duration: 0.18, ease: 'easeOut' }}
-        className="overflow-hidden rounded-3xl border border-blue-200 bg-white shadow-xl shadow-slate-950/5 dark:border-blue-950 dark:bg-slate-900"
-        aria-busy={creatingChecklist}
-      >
-        <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-4 dark:border-slate-800 sm:p-5">
-          <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-wide text-blue-600 dark:text-blue-300">Novo ciclo</p>
-            <h2 className="mt-1 text-lg font-black text-slate-900 dark:text-white">Criar checklist de validação</h2>
-            <p className="mt-1 text-sm text-slate-500">A criação gera solicitações por setor e racks da localidade selecionada.</p>
-          </div>
-          <button
-            type="button"
-            onClick={closeCreate}
-            disabled={creatingChecklist}
-            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-slate-500 transition hover:border-slate-300 hover:text-slate-900 active:scale-95 disabled:cursor-not-allowed disabled:opacity-45 dark:border-slate-700 dark:text-slate-400 dark:hover:text-white"
-            aria-label="Fechar criação de checklist"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="grid gap-4 p-4 sm:p-5 md:grid-cols-2">
-          <label className="space-y-1.5 text-sm font-bold text-slate-700 dark:text-slate-200">
-            <span>Nome do ciclo</span>
-            <input disabled={creatingChecklist} value={nome} onChange={event => setNome(event.target.value)} placeholder={defaultName} className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950/60" />
-          </label>
-          <label className="space-y-1.5 text-sm font-bold text-slate-700 dark:text-slate-200">
-            <span>Localidade</span>
-            <div className={creatingChecklist ? 'pointer-events-none opacity-60' : undefined}>
-              <LocalidadeSelect value={localidadeId} onChange={setLocalidadeId} />
-            </div>
-          </label>
-          <label className="space-y-1.5 text-sm font-bold text-slate-700 dark:text-slate-200">
-            <span>Data de início</span>
-            <input disabled={creatingChecklist} type="date" value={dataInicio} onChange={event => setDataInicio(event.target.value)} className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950/60" />
-          </label>
-        </div>
-
-        <div className="flex flex-col gap-3 border-t border-slate-100 p-4 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-          <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700 dark:border-slate-800 dark:bg-slate-950/50 dark:text-slate-200">
-            <input type="checkbox" disabled={creatingChecklist} checked={incluirRacks} onChange={event => setIncluirRacks(event.target.checked)} className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60" />
-            Incluir validações de racks
-          </label>
-          <button type="submit" disabled={!localidadeId || creatingChecklist} className="inline-flex h-12 min-w-[170px] items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 text-sm font-black text-white transition hover:bg-blue-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60">
-            {creatingChecklist && <Loader2 className="h-4 w-4 animate-spin" />}
-            {creatingChecklist ? 'Criando...' : 'Criar checklist'}
-          </button>
-        </div>
-      </motion.form>
-    )
   }
 
   function renderChecklistSection(mobile = false) {
@@ -622,10 +526,6 @@ export default function ChecklistsValidacaoPage() {
           actions={filterActions}
         />
 
-        <AnimatePresence>
-          {showCreate && isAdmin && renderCreateForm('desktop')}
-        </AnimatePresence>
-
         {renderChecklistSection()}
       </div>
 
@@ -667,7 +567,17 @@ export default function ChecklistsValidacaoPage() {
                 eyebrow="Criar"
                 title="Novo ciclo"
               />
-              {renderCreateForm('mobile')}
+              <div className="rounded-3xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+                <p className="text-sm leading-6 text-slate-500">Escolha a unidade, os setores com os itens de cada estação, os racks e se haverá revisão de estoque.</p>
+                <button
+                  type="button"
+                  onClick={() => setShowCreate(true)}
+                  className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-blue-600 px-5 text-sm font-black text-white transition hover:bg-blue-700 active:scale-95"
+                >
+                  <Plus className="h-5 w-5" />
+                  Abrir checklist
+                </button>
+              </div>
             </motion.section>
           )}
 
@@ -685,10 +595,22 @@ export default function ChecklistsValidacaoPage() {
         </AnimatePresence>
       </div>
 
+      {isAdmin && (
+        <ChecklistCreateModal
+          open={showCreate}
+          defaultName={defaultName}
+          onClose={closeCreate}
+          onCreated={handleCreated}
+        />
+      )}
+
       <ChecklistMobileBottomNav
         links={[]}
         value={mobileSection}
-        onViewChange={setMobileSection}
+        onViewChange={section => {
+          setMobileSection(section)
+          if (section === 'criar') setShowCreate(true)
+        }}
         views={mobileViews}
       />
     </div>

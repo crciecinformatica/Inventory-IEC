@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto'
 import { authOptions, isPrivilegedProfile } from '@/lib/auth'
 import { getChecklistTecnicoApto } from '@/lib/checklist/tecnico'
 import { getAuditSession, registrarAuditoria } from '@/lib/audit'
-import { calcularCoberturaSolicitacao, delegate, enrichSolicitacaoForReview, getSolicitacaoAssimilationAudit, sanitizeSolicitacao } from '@/lib/checklists-validacao'
+import { calcularCoberturaSolicitacao, delegate, enrichSolicitacaoForReview, getSolicitacaoAssimilationAudit, itensDoEscopo, listarEstoquePrevisto, sanitizeSolicitacao } from '@/lib/checklists-validacao'
 import { prisma } from '@/lib/prisma'
 
 export const runtime = 'nodejs'
@@ -81,10 +81,20 @@ export async function GET(request: Request, { params }: Props) {
       },
     })
     if (!solicitacao) return NextResponse.json({ error: 'Solicitação não encontrada' }, { status: 404 })
-    const [cobertura, assimilacaoAudit, comentarios] = await Promise.all([
+    const [cobertura, assimilacaoAudit, comentarios, impressorasEscopo, estoquePrevisto] = await Promise.all([
       calcularCoberturaSolicitacao(solicitacao),
       getSolicitacaoAssimilationAudit(id),
       getChecklistComentarios(id),
+      solicitacao.restringir_impressoras && solicitacao.impressora_ids?.length
+        ? prisma.impressoras.findMany({
+          where: { id: { in: solicitacao.impressora_ids } },
+          select: { id: true, nome_host: true, endereco_ip: true, modelo: true },
+          orderBy: { nome_host: 'asc' },
+        })
+        : Promise.resolve([]),
+      solicitacao.tipo_solicitacao === 'ESTOQUE' && solicitacao.checklist?.localidade_id
+        ? listarEstoquePrevisto(solicitacao.checklist.localidade_id, itensDoEscopo(solicitacao))
+        : Promise.resolve(null),
     ])
     const user = session.user as { id?: string | null; perfil?: string | null }
     const isAdmin = isPrivilegedProfile(user.perfil)
@@ -100,6 +110,8 @@ export async function GET(request: Request, { params }: Props) {
     const payload = {
       ...solicitacao,
       comentarios,
+      impressoras_escopo: impressorasEscopo,
+      estoque_previsto: estoquePrevisto,
       assimilada,
       assimilado_por_nome: assimilacaoAudit?.usuario_nome ?? null,
       assimilado_em: assimilacaoAudit?.created_at ?? null,

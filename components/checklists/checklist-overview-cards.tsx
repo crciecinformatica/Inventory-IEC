@@ -1,18 +1,20 @@
 'use client'
 
 import Link from 'next/link'
-import { CalendarClock, CheckCircle2, ClipboardList, Monitor, Phone, Printer, Server, UserRound } from 'lucide-react'
+import { Boxes, CalendarClock, CheckCircle2, ClipboardList, Laptop, Monitor, Phone, Printer, Server, Smartphone, UserRound } from 'lucide-react'
 import { motion } from 'motion/react'
 
 export type Cobertura = {
-  previsto: { maquinas: number; ramais: number; monitores: number; impressoras: number; racks: number; portas: number }
-  preenchido: { maquinas: number; ramais: number; monitores: number; impressoras: number; rack: number }
+  previsto: { maquinas: number; ramais: number; monitores: number; impressoras: number; notebooks?: number; aparelhos?: number; racks: number; portas: number }
+  preenchido: { maquinas: number; ramais: number; monitores: number; impressoras: number; notebooks?: number; aparelhos?: number; rack: number }
   percentual: number
 }
 
 export type ChecklistSolicitacaoResumo = {
   id: string
-  tipo_solicitacao: 'SETOR' | 'RACK'
+  tipo_solicitacao: 'SETOR' | 'RACK' | 'ESTOQUE'
+  titulo?: string
+  itens_escopo?: string[]
   status: string
   status_revisao: string
   planner_status: string
@@ -79,12 +81,17 @@ export function CoverageMini({ solicitacao }: { solicitacao: ChecklistSolicitaca
     )
   }
 
-  const rows = [
-    ['Máquinas', c.preenchido.maquinas, c.previsto.maquinas, Monitor],
-    ['Ramais', c.preenchido.ramais, c.previsto.ramais, Phone],
-    ['Monitores', c.preenchido.monitores, c.previsto.monitores, Monitor],
-    ['Impressoras', c.preenchido.impressoras, c.previsto.impressoras, Printer],
-  ] as const
+  const rows = solicitacao.tipo_solicitacao === 'ESTOQUE'
+    ? [
+      ['Notebooks', c.preenchido.notebooks ?? 0, c.previsto.notebooks ?? 0, Laptop],
+      ['Aparelhos', c.preenchido.aparelhos ?? 0, c.previsto.aparelhos ?? 0, Smartphone],
+    ] as const
+    : [
+      ['Estações', c.preenchido.maquinas, c.previsto.maquinas, Monitor],
+      ['Ramais', c.preenchido.ramais, c.previsto.ramais, Phone],
+      ['Monitores', c.preenchido.monitores, c.previsto.monitores, Monitor],
+      ['Impressoras', c.preenchido.impressoras, c.previsto.impressoras, Printer],
+    ] as const
 
   return (
     <div className="grid grid-cols-2 gap-2">
@@ -119,7 +126,7 @@ function ProgressCircle({ percent, size = 'lg' }: { percent: number; size?: 'sm'
 }
 
 export function SolicitacaoCard({ anchorId, solicitacao }: { anchorId?: string; solicitacao: ChecklistSolicitacaoResumo }) {
-  const title = solicitacao.setor_nome ?? solicitacao.rack_nome ?? 'Solicitação'
+  const title = solicitacao.titulo ?? solicitacao.setor_nome ?? solicitacao.rack_nome ?? 'Solicitação'
   const percent = solicitacao.cobertura?.percentual ?? 0
 
   return (
@@ -129,7 +136,10 @@ export function SolicitacaoCard({ anchorId, solicitacao }: { anchorId?: string; 
           <ProgressCircle percent={percent} />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{solicitacao.tipo_solicitacao}</span>
+              <span className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                {solicitacao.tipo_solicitacao === 'ESTOQUE' && <Boxes className="h-3.5 w-3.5" />}
+                {solicitacao.tipo_solicitacao}
+              </span>
               <span className={`rounded-full border px-2 py-1 text-xs font-semibold ${checklistStatusClass(solicitacao.status)}`}>{solicitacao.status}</span>
             </div>
             <h3 className="mt-2 line-clamp-2 text-xl font-bold text-slate-900 group-hover:text-blue-700 dark:text-white dark:group-hover:text-blue-300">{title}</h3>

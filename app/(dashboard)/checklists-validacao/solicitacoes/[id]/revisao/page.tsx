@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'motion/react'
 import { toast } from 'sonner'
@@ -12,7 +12,9 @@ import {
   ClipboardCheck,
   Database,
   Eye,
+  Boxes,
   GitCompareArrows,
+  Laptop,
   ListChecks,
   Loader2,
   MessageSquare,
@@ -21,6 +23,7 @@ import {
   Printer,
   Send,
   Server,
+  Smartphone,
   type LucideIcon,
   X,
 } from 'lucide-react'
@@ -61,7 +64,8 @@ type Item = {
 type Solicitacao = {
   id: string
   checklist_validacao_id: string
-  tipo_solicitacao: 'SETOR' | 'RACK'
+  tipo_solicitacao: 'SETOR' | 'RACK' | 'ESTOQUE'
+  titulo?: string
   status: string
   status_revisao: string
   setor_nome: string | null
@@ -104,6 +108,23 @@ const itemMeta: Record<string, { label: string; icon: LucideIcon; tone: string; 
     tone: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200',
     softTone: 'border-emerald-500/30 bg-emerald-500/5',
   },
+  NOTEBOOK: {
+    label: 'Notebook',
+    icon: Laptop,
+    tone: 'border-sky-500/40 bg-sky-500/10 text-sky-200',
+    softTone: 'border-sky-500/30 bg-sky-500/5',
+  },
+  APARELHO: {
+    label: 'Aparelho',
+    icon: Smartphone,
+    tone: 'border-amber-500/40 bg-amber-500/10 text-amber-200',
+    softTone: 'border-amber-500/30 bg-amber-500/5',
+  },
+}
+
+const estoqueGroupLabels: Record<string, string> = {
+  NOTEBOOK: 'Notebooks em estoque',
+  APARELHO: 'Aparelhos em estoque',
 }
 
 const fieldLabels: Record<string, string> = {
@@ -113,7 +134,10 @@ const fieldLabels: Record<string, string> = {
   capacidade: 'Capacidade',
   colaboradores_estacao: 'Colaboradores',
   endereco_ip: 'IP',
+  encontrado: 'Encontrado',
+  endereco_mac: 'MAC',
   estacao_ref: 'Estação',
+  fabricante: 'Fabricante',
   hostname: 'Host',
   ip: 'IP',
   local_fisico: 'Local físico',
@@ -123,10 +147,12 @@ const fieldLabels: Record<string, string> = {
   maquina_patrimonio: 'Patrimônio da estação',
   marca: 'Marca',
   memoria: 'Memória',
+  memoria_ram: 'Memória',
   modelo: 'Modelo',
   nome: 'Nome',
   nome_rede: 'Nome/Rede',
   numero: 'Número',
+  numero_patrimonio: 'Patrimônio',
   numero_ramal: 'Ramal',
   observacoes: 'Observações',
   patrimonio: 'Patrimônio',
@@ -263,7 +289,7 @@ function beforeFallback(diff: DiffWithItem) {
 }
 
 function afterFallback(diff: DiffWithItem) {
-  if (diff.tipo_diff === 'ausente') return 'Não informado no checklist'
+  if (diff.tipo_diff === 'ausente') return diff.item.dados_informados_json?.encontrado === false ? 'Não encontrado pelo técnico' : 'Não informado no checklist'
   if (diff.tipo_diff === 'sem_divergencia') return 'Confirmado pelo checklist'
   return 'Não informado'
 }
@@ -288,12 +314,14 @@ function itemNeedsDecision(item: Item) {
   return item.status_revisao === 'pendente' || item.status_revisao === 'parcial'
 }
 
-function groupKeyForItem(item: Item) {
+function groupKeyForItem(item: Item, estoque = false) {
+  if (estoque) return `estoque:${item.tipo_item}`
   if (item.tipo_item === 'IMPRESSORA') return 'impressoras'
   return stationLabel(item) ? `estacao:${stationLabel(item)}` : `isolado:${item.id}`
 }
 
-function groupLabelForItem(item: Item) {
+function groupLabelForItem(item: Item, estoque = false) {
+  if (estoque) return estoqueGroupLabels[item.tipo_item] ?? 'Dispositivos em estoque'
   if (item.tipo_item === 'IMPRESSORA') return 'Impressoras independentes'
   return stationLabel(item) ? `Estação ${stationLabel(item)}` : `Estação ${itemTitle(item)}`
 }
@@ -827,9 +855,19 @@ function StationReviewCard({
   const ramalItem = group.items.find(item => item.tipo_item === 'RAMAL')
   const monitorCount = counts.monitores
   const isPrinterGroup = group.key === 'impressoras'
-  const GroupIcon = isPrinterGroup ? Printer : Monitor
+  const isStockGroup = group.key.startsWith('estoque:')
+  const stockType = isStockGroup ? group.key.slice('estoque:'.length) : null
+  const GroupIcon = isStockGroup ? (itemMeta[stockType ?? '']?.icon ?? Boxes) : isPrinterGroup ? Printer : Monitor
+  const missingCount = group.items.filter(item => item.dados_informados_json?.encontrado === false).length
 
-  const summary = isPrinterGroup
+  const summary = isStockGroup
+    ? [
+      { label: 'Conferidos', value: String(group.items.length - missingCount) },
+      { label: 'Não encontrados', value: String(missingCount) },
+      { label: 'Pendentes', value: String(Math.max(0, pending)) },
+      ...(approvedCount > 0 ? [{ label: 'Aprovados', value: String(approvedCount) }] : []),
+    ]
+    : isPrinterGroup
     ? [
       { label: 'Impressoras', value: String(counts.impressoras) },
       { label: 'Pendentes', value: String(Math.max(0, pending)) },
@@ -870,7 +908,7 @@ function StationReviewCard({
                 <GroupIcon className="h-5 w-5" />
               </span>
               <div className="min-w-0">
-                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-blue-300">{isPrinterGroup ? 'Grupo independente' : 'Estação de trabalho'}</p>
+                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-blue-300">{isStockGroup ? 'Revisão de estoque' : isPrinterGroup ? 'Grupo independente' : 'Estação de trabalho'}</p>
                 <h3 className="mt-1 truncate text-2xl font-black text-white">{group.label.replace(/^Estação\s/, '')}</h3>
                 <div className="mt-2 flex flex-wrap gap-2 text-xs font-bold">
                   <span className={`rounded-full border px-3 py-1 ${itemStatusTone(status)}`}>{status}</span>
@@ -892,7 +930,7 @@ function StationReviewCard({
               className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-bold text-slate-200 transition hover:border-blue-500 hover:text-white"
             >
               <Eye className="h-4 w-4" />
-              Inspecionar estação
+              {isStockGroup || isPrinterGroup ? 'Inspecionar grupo' : 'Inspecionar estação'}
             </button>
           </div>
 
@@ -906,6 +944,24 @@ function StationReviewCard({
           </div>
         </div>
 
+        {isStockGroup ? (
+        <aside className="rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
+          <p className="flex items-center gap-2 text-sm font-black uppercase tracking-[0.12em] text-slate-400">
+            <Boxes className="h-4 w-4" />
+            Dispositivos
+          </p>
+          <ul className="mt-4 max-h-44 space-y-2 overflow-y-auto">
+            {group.items.map(item => (
+              <li key={item.id} className="flex items-center justify-between gap-2 rounded-xl bg-slate-950/70 px-3 py-2 text-sm">
+                <span className="truncate font-semibold text-slate-200">{itemTitle(item)}</span>
+                <span className={`shrink-0 text-[11px] font-bold ${item.dados_informados_json?.encontrado === false ? 'text-red-300' : 'text-emerald-300'}`}>
+                  {item.dados_informados_json?.encontrado === false ? 'ausente' : 'ok'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </aside>
+        ) : (
         <aside className="rounded-3xl border border-slate-800 bg-slate-900/60 p-4">
           <p className="flex items-center gap-2 text-sm font-black uppercase tracking-[0.12em] text-slate-400">
             <Eye className="h-4 w-4" />
@@ -928,6 +984,7 @@ function StationReviewCard({
             )}
           </div>
         </aside>
+        )}
       </div>
 
       </motion.article>
@@ -988,7 +1045,7 @@ function StationInspectionModal({
             <header className="shrink-0 border-b border-slate-800 bg-slate-900/70 p-5">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <p className="text-xs font-black uppercase tracking-[0.2em] text-blue-300">Inspeção da estação</p>
+                  <p className="text-xs font-black uppercase tracking-[0.2em] text-blue-300">{group.key.startsWith('estoque:') ? 'Inspeção do estoque' : group.key === 'impressoras' ? 'Inspeção do grupo' : 'Inspeção da estação'}</p>
                   <h2 className="mt-1 truncate text-2xl font-black text-white">{group.label}</h2>
                   <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
                     <span className={`rounded-full border px-3 py-1 ${itemStatusTone(status)}`}>{status}</span>
@@ -1047,10 +1104,14 @@ export default function ChecklistSolicitacaoRevisaoPage() {
   const [commentDraft, setCommentDraft] = useState('')
   const [commentSending, setCommentSending] = useState(false)
 
+  const loadedIdRef = useRef<string | null>(null)
   const load = useCallback(async () => {
-    setLoading(true)
-    const res = await fetch(`/api/checklists-validacao-solicitacoes/${params.id}?review=1`)
+    // Recargas após cada decisão mantêm a tela montada, preservando rolagem e a inspeção aberta.
+    const firstLoad = loadedIdRef.current !== params.id
+    if (firstLoad) setLoading(true)
+    const res = await fetch(`/api/checklists-validacao-solicitacoes/${params.id}?review=1`, { cache: 'no-store' })
     if (res.ok) setData(await res.json())
+    loadedIdRef.current = params.id
     setLoading(false)
   }, [params.id])
 
@@ -1109,10 +1170,11 @@ export default function ChecklistSolicitacaoRevisaoPage() {
   const canReview = Boolean((data?.status === 'finalizada' || data?.status === 'revisada') && !data?.assimilada)
   const stationGroups = useMemo(() => {
     const groups = new Map<string, { items: Item[]; label: string }>()
-    const order = { MAQUINA: 0, RAMAL: 1, MONITOR: 2, IMPRESSORA: 3 } as Record<string, number>
+    const order = { MAQUINA: 0, RAMAL: 1, MONITOR: 2, IMPRESSORA: 3, NOTEBOOK: 4, APARELHO: 5 } as Record<string, number>
+    const estoque = data?.tipo_solicitacao === 'ESTOQUE'
     for (const item of data?.itens ?? []) {
-      const key = groupKeyForItem(item)
-      const current = groups.get(key) ?? { label: groupLabelForItem(item), items: [] }
+      const key = groupKeyForItem(item, estoque)
+      const current = groups.get(key) ?? { label: groupLabelForItem(item, estoque), items: [] }
       current.items.push(item)
       groups.set(key, current)
     }
@@ -1121,7 +1183,7 @@ export default function ChecklistSolicitacaoRevisaoPage() {
       label: group.label,
       items: group.items.sort((a, b) => (order[a.tipo_item] ?? 99) - (order[b.tipo_item] ?? 99)),
     }))
-  }, [data?.itens])
+  }, [data?.itens, data?.tipo_solicitacao])
 
   if (loading) {
     return (
@@ -1199,7 +1261,7 @@ export default function ChecklistSolicitacaoRevisaoPage() {
       },
     ]
 
-  const title = data.setor_nome ?? data.rack_nome ?? 'Solicitação'
+  const title = data.titulo ?? data.setor_nome ?? data.rack_nome ?? 'Solicitação'
 
   return (
     <div className="mx-auto w-full max-w-[1500px] space-y-6 px-4 pb-10 pt-6 sm:px-6 lg:px-10">
