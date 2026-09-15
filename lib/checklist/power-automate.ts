@@ -1,5 +1,5 @@
 import { registrarAuditoria } from '@/lib/audit'
-import { checklistUrl, delegate, publicAppOrigin } from '@/lib/checklists-validacao'
+import { checklistUrl, delegate, publicAppOrigin, tituloSolicitacao } from '@/lib/checklists-validacao'
 
 type ChecklistWebhookEvent = 'solicitacao_criada' | 'solicitacao_assumida' | 'solicitacao_finalizada'
 
@@ -22,6 +22,7 @@ function text(value: unknown) {
 }
 
 function targetName(solicitacao: any) {
+  if (solicitacao.tipo_solicitacao === 'ESTOQUE') return tituloSolicitacao(solicitacao)
   return solicitacao.tipo_solicitacao === 'RACK'
     ? text(solicitacao.rack?.nome_switch) ?? 'Rack'
     : text(solicitacao.setor?.nome) ?? 'Setor'
@@ -44,15 +45,17 @@ function targetPayload(solicitacao: any) {
 
 function checklistItemsFor(tipoSolicitacao: string) {
   if (tipoSolicitacao === 'RACK') return ['informações gerais', 'portas', 'ocupação']
+  if (tipoSolicitacao === 'ESTOQUE') return ['conferência dos dispositivos', 'divergências']
   return ['máquinas', 'ramais', 'monitores', 'impressoras']
 }
 
 function bucketFor(tipoSolicitacao: string) {
+  if (tipoSolicitacao === 'ESTOQUE') return 'Estoque'
   return tipoSolicitacao === 'RACK' ? 'Racks' : 'Setores'
 }
 
 function titleFor(solicitacao: any) {
-  const tipo = solicitacao.tipo_solicitacao === 'RACK' ? 'RACK' : 'SETOR'
+  const tipo = ['RACK', 'ESTOQUE'].includes(solicitacao.tipo_solicitacao) ? solicitacao.tipo_solicitacao : 'SETOR'
   return `Checklist ${tipo} - ${targetName(solicitacao)}`
 }
 
@@ -67,6 +70,16 @@ function descriptionFor(solicitacao: any) {
       `Solicitação: Rack ${alvo}.`,
       `Localidade: ${localidadeName}.`,
       'Realizar a contagem e validação das portas do rack, conferindo ocupação, funcionalidade e usos.',
+      'O preenchimento deve ser feito no inventário.',
+    ].join(' ')
+  }
+
+  if (solicitacao.tipo_solicitacao === 'ESTOQUE') {
+    return [
+      `Checklist: ${checklistName}.`,
+      `Solicitação: ${alvo}.`,
+      `Localidade: ${localidadeName}.`,
+      `Conferir todos os itens da unidade (${alvo.toLowerCase()}), marcando o que foi encontrado e registrando divergências.`,
       'O preenchimento deve ser feito no inventário.',
     ].join(' ')
   }

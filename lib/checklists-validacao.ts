@@ -6,11 +6,16 @@ export const CHECKLIST_STATUS = ['aberto', 'finalizado'] as const
 export const SOLICITACAO_STATUS = ['aberta', 'assumida', 'finalizada', 'revisada'] as const
 export const REVISAO_STATUS = ['pendente', 'aprovado', 'recusado', 'parcial'] as const
 export const PLANNER_STATUS = ['pendente', 'assumido', 'concluido'] as const
-export const TIPOS_SOLICITACAO = ['SETOR', 'RACK'] as const
-export const TIPOS_ITEM = ['MAQUINA', 'RAMAL', 'MONITOR', 'IMPRESSORA'] as const
+export const TIPOS_SOLICITACAO = ['SETOR', 'RACK', 'ESTOQUE'] as const
+export const TIPOS_ITEM = ['MAQUINA', 'RAMAL', 'MONITOR', 'IMPRESSORA', 'NOTEBOOK', 'APARELHO'] as const
+/** Itens que podem compor o check de uma estação de trabalho do setor. */
+export const ITENS_ESTACAO = ['MAQUINA', 'MONITOR', 'RAMAL', 'COLABORADOR', 'IMPRESSORA'] as const
+/** Dispositivos sem necessidade de vínculo a uma estação: a revisão de estoque cobre todos eles na unidade. */
+export const ITENS_ESTOQUE = ['NOTEBOOK', 'APARELHO'] as const
 
 export type TipoItem = (typeof TIPOS_ITEM)[number]
 export type TipoSolicitacao = (typeof TIPOS_SOLICITACAO)[number]
+export type ItemEstoque = (typeof ITENS_ESTOQUE)[number]
 
 type UserRef = { id?: string | null; nome?: string | null }
 
@@ -75,10 +80,227 @@ export async function deriveSetoresDaLocalidade(localidadeId: string) {
   return Array.from(new Set([...maquinas, ...ramais, ...impressoras].map(item => item.setor_id).filter(Boolean))) as string[]
 }
 
+function countBySetor(rows: Array<{ setor_id: string | null; _count: { _all: number } }>) {
+  return new Map(rows.filter(row => row.setor_id).map(row => [row.setor_id as string, row._count._all]))
+}
+
+/** Itens do escopo da solicitação; lista vazia (legado) significa todos os itens do tipo. */
+export function itensDoEscopo(solicitacao: { tipo_solicitacao?: string | null; itens_escopo?: string[] | null }): string[] {
+  const informados = (solicitacao.itens_escopo ?? []).filter(Boolean)
+  if (solicitacao.tipo_solicitacao === 'ESTOQUE') {
+    const validos = informados.filter(item => (ITENS_ESTOQUE as readonly string[]).includes(item))
+    return validos.length ? validos : [...ITENS_ESTOQUE]
+  }
+  if (solicitacao.tipo_solicitacao === 'SETOR') {
+    const validos = informados.filter(item => (ITENS_ESTACAO as readonly string[]).includes(item))
+    return validos.length ? validos : [...ITENS_ESTACAO]
+  }
+  return []
+}
+
+export async function listarEstoquePrevisto(localidadeId: string, itens: string[] = [...ITENS_ESTOQUE]) {
+  const [notebooks, aparelhos] = await Promise.all([
+    itens.includes('NOTEBOOK')
+      ? prisma.notebooks.findMany({
+        where: { localidade_id: localidadeId },
+        select: { id: true, numero_patrimonio: true, modelo: true, fabricante: true, memoria: true, armazenamento: true, processador: true, emprestado: true },
+        orderBy: [{ numero_patrimonio: 'asc' }],
+      })
+      : Promise.resolve([]),
+    itens.includes('APARELHO')
+      ? prisma.aparelhos.findMany({
+        where: { localidade_id: localidadeId },
+        select: { id: true, modelo: true, endereco_mac: true, endereco_ip: true, chip: true },
+        orderBy: [{ modelo: 'asc' }],
+      })
+      : Promise.resolve([]),
+  ])
+  return { notebooks, aparelhos }
+}
+
+export async function listarEscopoLocalidade(localidadeId: string) {
+  const [maquinas, ramais, monitores, colaboradores, impressoras, racks, estoque] = await Promise.all([
+    prisma.maquinas.groupBy({ by: ['setor_id'], where: { localidade_id: localidadeId }, _count: { _all: true } }),
+    prisma.ramais.groupBy({ by: ['setor_id'], where: { localidade_id: localidadeId }, _count: { _all: true } }),
+    delegate('alocacoes_monitores').findMany({
+      where: { ativo: true, maquina: { localidade_id: localidadeId, setor_id: { not: null } } },
+      select: { maquina: { select: { setor_id: true } } },
+    }) as Promise<Array<{ maquina: { setor_id: string | null } | null }>>,
+    prisma.colaboradores.groupBy({ by: ['setor_id'], where: { localidade_id: localidadeId, status: 'Ativo' }, _count: { _all: true } }),
+    prisma.impressoras.findMany({
+      where: { localidade_id: localidadeId },
+      select: { id: true, setor_id: true, nome_host: true, endereco_ip: true, modelo: true, andar: true, status: true },
+      orderBy: [{ nome_host: 'asc' }, { endereco_ip: 'asc' }],
+    }),
+    prisma.racks.findMany({
+      where: { localidade_id: localidadeId },
+      select: { id: true, nome_switch: true, localizacao: true, quantidade_portas: true, setor_rel: { select: { nome: true } } },
+      orderBy: [{ nome_switch: 'asc' }, { localizacao: 'asc' }],
+    }),
+    listarEstoquePrevisto(localidadeId),
+  ])
+
+  const maquinasPorSetor = countBySetor(maquinas as any)
+  const ramaisPorSetor = countBySetor(ramais as any)
+  const colaboradoresPorSetor = countBySetor(colaboradores as any)
+  const monitoresPorSetor = new Map<string, number>()
+  for (const row of monitores) {
+    const setorId = row.maquina?.setor_id
+    if (setorId) monitoresPorSetor.set(setorId, (monitoresPorSetor.get(setorId) ?? 0) + 1)
+  }
+  const setorIdsComAtivos = new Set([
+    ...maquinasPorSetor.keys(),
+    ...ramaisPorSetor.keys(),
+    ...impressoras.map(item => item.setor_id).filter(Boolean) as string[],
+  ])
+
+  // Setores são globais: lista os ativos e também os inativos que ainda têm ativos na localidade.
+  const setores = await prisma.setores.findMany({
+    where: { OR: [{ ativo: true }, { id: { in: Array.from(setorIdsComAtivos) } }] },
+    select: { id: true, nome: true, ativo: true },
+    orderBy: { nome: 'asc' },
+  })
+
+  return {
+    setores: setores.map(setor => ({
+      ...setor,
+      com_ativos: setorIdsComAtivos.has(setor.id),
+      contagem: {
+        MAQUINA: maquinasPorSetor.get(setor.id) ?? 0,
+        MONITOR: monitoresPorSetor.get(setor.id) ?? 0,
+        RAMAL: ramaisPorSetor.get(setor.id) ?? 0,
+        COLABORADOR: colaboradoresPorSetor.get(setor.id) ?? 0,
+        IMPRESSORA: impressoras.filter(item => item.setor_id === setor.id).length,
+      },
+      impressoras: impressoras
+        .filter(item => item.setor_id === setor.id)
+        .map(item => ({ id: item.id, nome_host: item.nome_host, endereco_ip: item.endereco_ip, modelo: item.modelo, andar: item.andar, status: item.status })),
+    })),
+    impressoras_sem_setor: impressoras.filter(item => !item.setor_id).length,
+    racks: racks.map(({ setor_rel, ...rack }) => ({ ...rack, setor_nome: setor_rel?.nome ?? null })),
+    estoque: {
+      NOTEBOOK: estoque.notebooks.map(item => ({
+        id: item.id,
+        titulo: item.numero_patrimonio ?? item.modelo ?? 'Notebook sem patrimônio',
+        detalhe: [item.fabricante, item.modelo, item.emprestado ? 'emprestado' : null].filter(Boolean).join(' · ') || null,
+      })),
+      APARELHO: estoque.aparelhos.map(item => ({
+        id: item.id,
+        titulo: item.modelo ?? item.endereco_mac ?? 'Aparelho sem identificação',
+        detalhe: [item.endereco_mac, item.endereco_ip].filter(Boolean).join(' · ') || null,
+      })),
+    },
+  }
+}
+
+function uniqueIds(value: unknown, campo: string) {
+  if (value == null) return null
+  if (!Array.isArray(value)) throw new ChecklistError(`${campo} deve ser uma lista`)
+  const ids = Array.from(new Set(value.map(item => text(item)).filter(Boolean) as string[]))
+  if (ids.some(id => !isUuid(id))) throw new ChecklistError(`${campo} contém identificadores inválidos`)
+  return ids
+}
+
+function itensInformados(value: unknown, permitidos: readonly string[], campo: string) {
+  if (value == null) return [...permitidos]
+  if (!Array.isArray(value)) throw new ChecklistError(`${campo} deve ser uma lista`)
+  const itens = Array.from(new Set(value.map(item => String(item ?? '').trim().toUpperCase()).filter(Boolean)))
+  const invalido = itens.find(item => !permitidos.includes(item))
+  if (invalido) throw new ChecklistError(`${campo} contém item inválido: ${invalido}`)
+  return itens
+}
+
+type SetorEscopo = { setor_id: string; itens: string[]; impressora_ids: string[] | null }
+
+async function resolverEscopoChecklist(params: {
+  localidade_id: string
+  incluir_racks: boolean
+  setores?: unknown
+  setor_ids?: unknown
+  impressora_ids?: unknown
+  rack_ids?: unknown
+  estoque?: unknown
+}) {
+  let setores: SetorEscopo[]
+
+  if (params.setores != null) {
+    if (!Array.isArray(params.setores)) throw new ChecklistError('setores deve ser uma lista')
+    setores = params.setores.map((entry: any) => {
+      const setorId = text(entry?.setor_id)
+      if (!setorId || !isUuid(setorId)) throw new ChecklistError('Setor selecionado inválido')
+      const itens = itensInformados(entry?.itens, ITENS_ESTACAO, 'itens do setor')
+      if (itens.length === 0) throw new ChecklistError('Cada setor precisa de ao menos um item da estação')
+      return { setor_id: setorId, itens, impressora_ids: uniqueIds(entry?.impressora_ids, 'impressora_ids') }
+    })
+    if (new Set(setores.map(item => item.setor_id)).size !== setores.length) throw new ChecklistError('Setor repetido na seleção')
+  } else {
+    // Formato anterior (setor_ids + impressora_ids) ou nenhum: todos os itens da estação.
+    const setorIds = uniqueIds(params.setor_ids, 'setor_ids') ?? await deriveSetoresDaLocalidade(params.localidade_id)
+    const impressoraIds = uniqueIds(params.impressora_ids, 'impressora_ids')
+    setores = setorIds.map(setor_id => ({ setor_id, itens: [], impressora_ids: impressoraIds ? [] : null }))
+    if (impressoraIds) {
+      const impressoras = await prisma.impressoras.findMany({ where: { id: { in: impressoraIds } }, select: { id: true, setor_id: true } })
+      for (const impressora of impressoras) {
+        setores.find(item => item.setor_id === impressora.setor_id)?.impressora_ids?.push(impressora.id)
+      }
+    }
+  }
+
+  if (setores.length) {
+    const existentes = await prisma.setores.count({ where: { id: { in: setores.map(item => item.setor_id) } } })
+    if (existentes !== setores.length) throw new ChecklistError('Um ou mais setores selecionados não existem')
+  }
+
+  const impressoraIds = setores.flatMap(item => item.impressora_ids ?? [])
+  if (impressoraIds.length) {
+    const impressoras = await prisma.impressoras.findMany({
+      where: { id: { in: impressoraIds } },
+      select: { id: true, setor_id: true, localidade_id: true },
+    })
+    if (impressoras.length !== new Set(impressoraIds).size) throw new ChecklistError('Uma ou mais impressoras selecionadas não existem')
+    for (const setor of setores) {
+      for (const id of setor.impressora_ids ?? []) {
+        const impressora = impressoras.find(item => item.id === id)!
+        if (impressora.localidade_id !== params.localidade_id) throw new ChecklistError('Impressora selecionada não pertence à localidade do checklist')
+        if (impressora.setor_id !== setor.setor_id) throw new ChecklistError('Impressora selecionada não pertence ao setor informado')
+      }
+    }
+  }
+
+  const rackIdsInformados = uniqueIds(params.rack_ids, 'rack_ids')
+  let rackIds: string[]
+  if (rackIdsInformados) {
+    const racks = await prisma.racks.count({ where: { id: { in: rackIdsInformados }, localidade_id: params.localidade_id } })
+    if (racks !== rackIdsInformados.length) throw new ChecklistError('Um ou mais racks selecionados não pertencem à localidade')
+    rackIds = rackIdsInformados
+  } else {
+    rackIds = params.incluir_racks
+      ? (await prisma.racks.findMany({ where: { localidade_id: params.localidade_id }, select: { id: true } })).map(rack => rack.id)
+      : []
+  }
+
+  let estoqueItens: string[] | null = null
+  if (params.estoque != null && params.estoque !== false) {
+    estoqueItens = itensInformados((params.estoque as any)?.itens, ITENS_ESTOQUE, 'itens do estoque')
+    if (estoqueItens.length === 0) throw new ChecklistError('Selecione ao menos um tipo de dispositivo para a revisão de estoque')
+  }
+
+  if (setores.length === 0 && rackIds.length === 0 && !estoqueItens) {
+    throw new ChecklistError('Selecione ao menos um setor, rack ou a revisão de estoque')
+  }
+
+  return { setores, rackIds, estoqueItens }
+}
+
 export async function createChecklist(params: {
   nome: string
   localidade_id: string
   incluir_racks: boolean
+  setores?: unknown
+  setor_ids?: unknown
+  impressora_ids?: unknown
+  rack_ids?: unknown
+  estoque?: unknown
   data_inicio?: string | null
   origin?: string | null
   user: UserRef
@@ -89,17 +311,14 @@ export async function createChecklist(params: {
   const localidade = await prisma.localidades.findFirst({ where: { id: params.localidade_id, ativo: true } })
   if (!localidade) throw new ChecklistError('Localidade inválida ou inativa', 404)
 
-  const setorIds = await deriveSetoresDaLocalidade(params.localidade_id)
-  const racks = params.incluir_racks
-    ? await prisma.racks.findMany({ where: { localidade_id: params.localidade_id }, select: { id: true } })
-    : []
+  const { setores, rackIds, estoqueItens } = await resolverEscopoChecklist(params)
 
   const checklist = await prisma.$transaction(async tx => {
     const created = await (tx as any).checklists_validacao.create({
       data: {
         nome,
         localidade_id: params.localidade_id,
-        incluir_racks: params.incluir_racks,
+        incluir_racks: rackIds.length > 0,
         data_inicio: params.data_inicio ? new Date(params.data_inicio) : null,
         data_fim: null,
         criado_por: params.user.id ?? null,
@@ -107,8 +326,18 @@ export async function createChecklist(params: {
     })
 
     const rows = [
-      ...setorIds.map(setor_id => ({ checklist_validacao_id: created.id, tipo_solicitacao: 'SETOR', setor_id })),
-      ...racks.map(rack => ({ checklist_validacao_id: created.id, tipo_solicitacao: 'RACK', rack_id: rack.id })),
+      ...setores.map(setor => ({
+        checklist_validacao_id: created.id,
+        tipo_solicitacao: 'SETOR',
+        setor_id: setor.setor_id,
+        itens_escopo: setor.itens,
+        ...(setor.impressora_ids
+          ? { restringir_impressoras: true, impressora_ids: setor.itens.includes('IMPRESSORA') ? setor.impressora_ids : [] }
+          : {}),
+      })),
+      ...rackIds.map(rack_id => ({ checklist_validacao_id: created.id, tipo_solicitacao: 'RACK', rack_id })),
+      // Uma solicitação por tipo de dispositivo, para notebooks e aparelhos seguirem fluxos independentes.
+      ...(estoqueItens ?? []).map(item => ({ checklist_validacao_id: created.id, tipo_solicitacao: 'ESTOQUE', itens_escopo: [item] })),
     ]
 
     for (const row of rows) {
@@ -230,6 +459,21 @@ async function findReferencia(tipo: TipoItem, dados: Record<string, any>) {
       },
     })
   }
+  if (tipo === 'NOTEBOOK') {
+    const conditions = [
+      text(dados.referencia_id) ? { id: text(dados.referencia_id)! } : undefined,
+      text(dados.patrimonio) ? { numero_patrimonio: text(dados.patrimonio)! } : undefined,
+    ].filter(Boolean) as any[]
+    return conditions.length ? prisma.notebooks.findFirst({ where: { OR: conditions } }) : null
+  }
+  if (tipo === 'APARELHO') {
+    const conditions = [
+      text(dados.referencia_id) ? { id: text(dados.referencia_id)! } : undefined,
+      text(dados.endereco_mac) ? { endereco_mac: { equals: text(dados.endereco_mac)!, mode: 'insensitive' } } : undefined,
+      text(dados.ip) ? { endereco_ip: text(dados.ip)! } : undefined,
+    ].filter(Boolean) as any[]
+    return conditions.length ? prisma.aparelhos.findFirst({ where: { OR: conditions } }) : null
+  }
   return delegate('monitores').findFirst({
     where: {
       OR: [
@@ -249,6 +493,19 @@ function fieldsFor(tipo: TipoItem) {
     ['patrimonio_cpu', 'patrimonio'],
     ['setor_id', 'setor_id'],
     ['localidade_id', 'localidade_id'],
+  ] as const
+  if (tipo === 'NOTEBOOK') return [
+    ['numero_patrimonio', 'patrimonio'],
+    ['fabricante', 'fabricante'],
+    ['modelo', 'modelo'],
+    ['memoria', 'memoria'],
+    ['armazenamento', 'armazenamento'],
+    ['processador', 'processador'],
+  ] as const
+  if (tipo === 'APARELHO') return [
+    ['modelo', 'modelo'],
+    ['endereco_mac', 'endereco_mac'],
+    ['endereco_ip', 'ip'],
   ] as const
   if (tipo === 'RAMAL') return [
     ['numero_ramal', 'numero_ramal'],
@@ -299,7 +556,7 @@ function reviewMetadata(tipo: TipoItem, solicitacao: any, user: UserRef, now: Da
     checklist_revisado_em: now,
   }
 
-  if (tipo === 'MAQUINA') return { ...common, data_revisao: now }
+  if (tipo === 'MAQUINA' || tipo === 'NOTEBOOK') return { ...common, data_revisao: now }
   if (tipo === 'IMPRESSORA') return { ...common, revisao: now }
   if (tipo === 'MONITOR') return { ...common, atualizado_em: now }
   return common
@@ -309,6 +566,8 @@ function assetTable(tipo: TipoItem) {
   if (tipo === 'MAQUINA') return 'maquinas'
   if (tipo === 'RAMAL') return 'ramais'
   if (tipo === 'IMPRESSORA') return 'impressoras'
+  if (tipo === 'NOTEBOOK') return 'notebooks'
+  if (tipo === 'APARELHO') return 'aparelhos'
   return 'monitores'
 }
 
@@ -348,6 +607,29 @@ function createPayloadForItem(tipo: TipoItem, data: Record<string, any>, solicit
       modelo: text(data.modelo),
       identificador_selb: text(data.patrimonio),
       setor_id,
+      localidade_id,
+      ...metadata,
+    }
+  }
+
+  if (tipo === 'NOTEBOOK') {
+    return {
+      numero_patrimonio: text(data.patrimonio),
+      fabricante: text(data.fabricante),
+      modelo: text(data.modelo),
+      memoria: text(data.memoria),
+      armazenamento: text(data.armazenamento),
+      processador: text(data.processador),
+      localidade_id,
+      ...metadata,
+    }
+  }
+
+  if (tipo === 'APARELHO') {
+    return {
+      modelo: text(data.modelo),
+      endereco_mac: text(data.endereco_mac),
+      endereco_ip: text(data.ip) ?? text(data.endereco_ip),
       localidade_id,
       ...metadata,
     }
@@ -615,7 +897,18 @@ export async function upsertChecklistItem(params: {
 }) {
   if (!TIPOS_ITEM.includes(params.tipo_item)) throw new ChecklistError('Tipo de item inválido')
   const solicitacao = await ensureSolicitacaoFillable(params.solicitacaoId, params.user, params.isAdmin)
-  if (solicitacao.tipo_solicitacao !== 'SETOR') throw new ChecklistError('Itens são permitidos apenas em solicitação setorial')
+  if (solicitacao.tipo_solicitacao === 'RACK') throw new ChecklistError('Itens não são permitidos em solicitação de rack')
+  const escopo = itensDoEscopo(solicitacao)
+  if (solicitacao.tipo_solicitacao === 'ESTOQUE' && !escopo.includes(params.tipo_item)) {
+    throw new ChecklistError('Tipo de dispositivo fora do escopo desta revisão de estoque')
+  }
+  // A CPU é a âncora da estação: continua registrada como referência mesmo fora do escopo.
+  if (solicitacao.tipo_solicitacao === 'SETOR' && params.tipo_item !== 'MAQUINA' && !escopo.includes(params.tipo_item)) {
+    throw new ChecklistError('Item fora do escopo definido para este setor')
+  }
+  if (solicitacao.tipo_solicitacao === 'SETOR' && !['MAQUINA', 'RAMAL', 'MONITOR', 'IMPRESSORA'].includes(params.tipo_item)) {
+    throw new ChecklistError('Tipo de item inválido para solicitação setorial')
+  }
 
   const dados: Record<string, any> = {
     ...params.dados,
@@ -629,6 +922,8 @@ export async function upsertChecklistItem(params: {
     ?? text(dados.codigo_interno)
     ?? text(dados.nome_rede)
     ?? text(dados.ip)
+    ?? text(dados.endereco_mac)
+    ?? text(dados.modelo)
 
   const data = {
     checklist_validacao_solicitacao_id: params.solicitacaoId,
@@ -638,6 +933,14 @@ export async function upsertChecklistItem(params: {
     dados_informados_json: jsonValue(dados),
     preenchido_por: params.user.id ?? null,
     preenchido_em: new Date(),
+  }
+
+  const referenciaInformada = text(dados.referencia_id)
+  if (!params.itemId && solicitacao.tipo_solicitacao === 'ESTOQUE' && referenciaInformada) {
+    const existente = await delegate('checklists_validacao_itens').findFirst({
+      where: { checklist_validacao_solicitacao_id: params.solicitacaoId, tipo_item: params.tipo_item, referencia_id: referenciaInformada },
+    })
+    if (existente) params = { ...params, itemId: existente.id }
   }
 
   if (!params.itemId && params.tipo_item === 'MAQUINA') {
@@ -713,6 +1016,20 @@ function buildDiffsForItem(item: any, referencia: any) {
   const tipo = item.tipo_item as TipoItem
   const dados = (item.dados_informados_json ?? {}) as Record<string, any>
   const diffs: Array<{ campo: string; valor_atual: unknown; valor_informado: unknown; tipo_diff: string }> = []
+
+  if (dados.encontrado === false) {
+    diffs.push({ campo: '_item', valor_atual: referencia?.id ?? item.referencia_id ?? null, valor_informado: null, tipo_diff: 'ausente' })
+    return diffs
+  }
+
+  if (dados.somente_referencia) {
+    // CPU fora do escopo: serve só para ancorar colaboradores, ramal e monitores.
+    diffs.push(referencia
+      ? { campo: '_item', valor_atual: referencia.id, valor_informado: item.identificador_informado, tipo_diff: 'sem_divergencia' }
+      : { campo: '_item', valor_atual: null, valor_informado: item.identificador_informado, tipo_diff: 'vinculo_divergente' })
+    return diffs
+  }
+
   if (!referencia) {
     diffs.push({ campo: '_item', valor_atual: null, valor_informado: dados, tipo_diff: 'novo' })
     return diffs
@@ -737,10 +1054,51 @@ function buildDiffsForItem(item: any, referencia: any) {
   return diffs
 }
 
+function tituloEstoque(tipo: ItemEstoque, row: any) {
+  if (tipo === 'NOTEBOOK') return text(row.numero_patrimonio) ?? text(row.modelo)
+  return text(row.modelo) ?? text(row.endereco_mac)
+}
+
+/**
+ * Dispositivos previstos no estoque que o técnico não conferiu viram itens "não encontrado",
+ * para que a revisão decida sobre eles como qualquer outro diff.
+ */
+async function registrarEstoqueNaoConferido(solicitacao: any) {
+  const checklist = await delegate('checklists_validacao').findUnique({ where: { id: solicitacao.checklist_validacao_id }, select: { localidade_id: true } })
+  if (!checklist?.localidade_id) return
+  const itensEscopo = itensDoEscopo(solicitacao) as ItemEstoque[]
+  const previsto = await listarEstoquePrevisto(checklist.localidade_id, itensEscopo)
+  const existentes: ChecklistItemRow[] = await delegate('checklists_validacao_itens').findMany({
+    where: { checklist_validacao_solicitacao_id: solicitacao.id },
+    select: { id: true, tipo_item: true, referencia_id: true, dados_informados_json: true },
+  })
+  const conferidos = new Set(existentes.map(item => `${item.tipo_item}:${item.referencia_id ?? itemData(item).referencia_id ?? ''}`))
+  const porTipo: Array<[ItemEstoque, any[]]> = [
+    ['NOTEBOOK', previsto.notebooks],
+    ['APARELHO', previsto.aparelhos],
+  ]
+  for (const [tipo, rows] of porTipo) {
+    for (const row of rows) {
+      if (conferidos.has(`${tipo}:${row.id}`)) continue
+      await delegate('checklists_validacao_itens').create({
+        data: {
+          checklist_validacao_solicitacao_id: solicitacao.id,
+          tipo_item: tipo,
+          referencia_id: row.id,
+          identificador_informado: tituloEstoque(tipo, row),
+          dados_informados_json: jsonValue({ referencia_id: row.id, encontrado: false, nao_conferido: true }),
+          preenchido_em: new Date(),
+        },
+      })
+    }
+  }
+}
+
 export async function gerarDiffSolicitacao(solicitacaoId: string) {
   const solicitacao = await delegate('checklists_validacao_solicitacoes').findUnique({ where: { id: solicitacaoId } })
   if (!solicitacao) throw new ChecklistError('Solicitação não encontrada', 404)
-  if (solicitacao.tipo_solicitacao !== 'SETOR') throw new ChecklistError('Diff só é gerado para solicitação setorial')
+  if (solicitacao.tipo_solicitacao === 'RACK') throw new ChecklistError('Diff não é gerado para solicitação de rack')
+  if (solicitacao.tipo_solicitacao === 'ESTOQUE') await registrarEstoqueNaoConferido(solicitacao)
 
   const itens: ChecklistItemRow[] = await delegate('checklists_validacao_itens').findMany({ where: { checklist_validacao_solicitacao_id: solicitacaoId } })
   await delegate('checklists_validacao_diffs').deleteMany({ where: { checklist_validacao_solicitacao_id: solicitacaoId } })
@@ -821,7 +1179,7 @@ export async function aprovarTudoSolicitacao(solicitacaoId: string, user: UserRe
     return { tipo_solicitacao: 'RACK', solicitacao: atualizado, itens_aprovados: 1, diffs_aprovados: 0 }
   }
 
-  if (solicitacao.tipo_solicitacao !== 'SETOR') throw new ChecklistError('Tipo de solicitação inválido')
+  if (solicitacao.tipo_solicitacao !== 'SETOR' && solicitacao.tipo_solicitacao !== 'ESTOQUE') throw new ChecklistError('Tipo de solicitação inválido')
 
   const itens: ChecklistItemRow[] = await delegate('checklists_validacao_itens').findMany({
     where: { checklist_validacao_solicitacao_id: solicitacaoId },
@@ -906,7 +1264,8 @@ export async function assimilarSolicitacaoSetorial(solicitacaoId: string, user: 
     },
   })
   if (!solicitacao) throw new ChecklistError('Solicitação não encontrada', 404)
-  if (solicitacao.tipo_solicitacao !== 'SETOR') throw new ChecklistError('Assimilação setorial inválida')
+  if (solicitacao.tipo_solicitacao !== 'SETOR' && solicitacao.tipo_solicitacao !== 'ESTOQUE') throw new ChecklistError('Assimilação setorial inválida')
+  const reconciliarColaboradores = solicitacao.tipo_solicitacao === 'SETOR' && itensDoEscopo(solicitacao).includes('COLABORADOR')
 
   const audits: AuditEntry[] = []
   const applied = new Set<string>()
@@ -928,7 +1287,7 @@ export async function assimilarSolicitacaoSetorial(solicitacaoId: string, user: 
       : await findReferencia('MAQUINA', data)
     if (referencedMachine?.id) initialStationMachineIds.set(station, referencedMachine.id)
     const ids = splitIds(data.colaboradores_estacao_ids)
-    if (ids.length > 0 || String(data.colaboradores_estacao ?? '').toLowerCase().includes('sem colaborador')) {
+    if (reconciliarColaboradores && (ids.length > 0 || String(data.colaboradores_estacao ?? '').toLowerCase().includes('sem colaborador'))) {
       stationCollaborators.set(station, ids)
     }
   }
@@ -938,7 +1297,7 @@ export async function assimilarSolicitacaoSetorial(solicitacaoId: string, user: 
     const stationMachineIds = new Map(initialStationMachineIds)
     const orderedItems = Array.from(approvedByItem.entries())
       .sort(([, a], [, b]) => {
-        const order = { MAQUINA: 0, RAMAL: 1, MONITOR: 2, IMPRESSORA: 3 } as Record<string, number>
+        const order = { MAQUINA: 0, RAMAL: 1, MONITOR: 2, IMPRESSORA: 3, NOTEBOOK: 4, APARELHO: 5 } as Record<string, number>
         return (order[a[0]?.item?.tipo_item] ?? 99) - (order[b[0]?.item?.tipo_item] ?? 99)
       })
 
@@ -969,6 +1328,19 @@ export async function assimilarSolicitacaoSetorial(solicitacaoId: string, user: 
 
       for (const diff of itemDiffs) {
         if (diff.campo === '_item' && diff.tipo_diff === 'novo') continue
+        if (diff.tipo_diff === 'ausente') {
+          // Ausência confirmada fica registrada na auditoria; o cadastro não é alterado automaticamente.
+          applied.add(`${table}:${assetId}:${diff.id}`)
+          pushAudit(audits, {
+            tabela: table,
+            registro_id: assetId,
+            acao: 'UPDATE',
+            descricao: `Ativo não localizado na revisão de estoque (${tipo})`,
+            dados_novos: { checklist_validacao_id: solicitacao.checklist_validacao_id, encontrado: false },
+          })
+          continue
+        }
+        if (data.somente_referencia) continue
         const before = await (tx as any)[table].findUnique({ where: { id: assetId } })
         if (!before) continue
         const updateData = updatePayloadForDiff(tipo, diff, solicitacao, user, now)
@@ -989,7 +1361,7 @@ export async function assimilarSolicitacaoSetorial(solicitacaoId: string, user: 
       const station = stationRefFromData(data)
       if (tipo === 'MAQUINA' && station) stationMachineIds.set(station, assetId)
 
-      if (tipo === 'MAQUINA') {
+      if (tipo === 'MAQUINA' && reconciliarColaboradores) {
         await reconcileMachineCollaborators(tx, { audits, item, maquinaId: assetId, now, user })
       }
 
@@ -1119,6 +1491,14 @@ async function referenceTitleForItem(item: any) {
     const row = await prisma.impressoras.findUnique({ where: { id: item.referencia_id }, select: { nome_host: true, endereco_ip: true, identificador_selb: true } })
     return row?.nome_host ?? row?.endereco_ip ?? row?.identificador_selb ?? null
   }
+  if (tipo === 'NOTEBOOK') {
+    const row = await prisma.notebooks.findUnique({ where: { id: item.referencia_id }, select: { numero_patrimonio: true, modelo: true } })
+    return row?.numero_patrimonio ?? row?.modelo ?? null
+  }
+  if (tipo === 'APARELHO') {
+    const row = await prisma.aparelhos.findUnique({ where: { id: item.referencia_id }, select: { modelo: true, endereco_mac: true } })
+    return row?.modelo ?? row?.endereco_mac ?? null
+  }
   const row = await delegate('monitores').findUnique({ where: { id: item.referencia_id }, select: { patrimonio: true, codigo_interno: true, marca: true, modelo: true } })
   return row?.patrimonio ?? row?.codigo_interno ?? [row?.marca, row?.modelo].filter(Boolean).join(' ') ?? null
 }
@@ -1210,6 +1590,43 @@ async function referenceSnapshotForItem(item: any): Promise<ReviewSnapshotEntry[
     ])
   }
 
+  if (tipo === 'NOTEBOOK') {
+    const row = await prisma.notebooks.findUnique({
+      where: { id: item.referencia_id },
+      include: { localidade_rel: { select: { nome: true } }, alocacoes: { where: { ativo: true }, include: { colaborador: { select: { nome: true, codigo: true } } } } },
+    })
+    if (!row) return []
+    return compactEntries([
+      maybeEntry('Patrimônio', row.numero_patrimonio),
+      maybeEntry('Fabricante', row.fabricante),
+      maybeEntry('Modelo', row.modelo),
+      maybeEntry('Memória', row.memoria),
+      maybeEntry('Armazenamento', row.armazenamento),
+      maybeEntry('Processador', row.processador),
+      maybeEntry('Localidade', row.localidade_rel?.nome),
+      maybeEntry('Emprestado', row.emprestado),
+      maybeEntry('Colaboradores ativos', row.alocacoes.map(alocacao => collaboratorName(alocacao.colaborador)).filter(Boolean).join(', ')),
+      maybeEntry('Última revisão', row.checklist_revisado_em ?? row.data_revisao),
+    ])
+  }
+
+  if (tipo === 'APARELHO') {
+    const row = await prisma.aparelhos.findUnique({
+      where: { id: item.referencia_id },
+      include: { localidade_rel: { select: { nome: true } }, alocacoes: { where: { ativo: true }, include: { colaborador: { select: { nome: true, codigo: true } } } } },
+    })
+    if (!row) return []
+    return compactEntries([
+      maybeEntry('Modelo', row.modelo),
+      maybeEntry('MAC', row.endereco_mac),
+      maybeEntry('IP', row.endereco_ip),
+      maybeEntry('Chip', row.chip),
+      maybeEntry('Localidade', row.localidade_rel?.nome),
+      maybeEntry('Colaboradores ativos', row.alocacoes.map(alocacao => collaboratorName(alocacao.colaborador)).filter(Boolean).join(', ')),
+      maybeEntry('Última revisão', row.checklist_revisado_em),
+    ])
+  }
+
   const row = await delegate('monitores').findUnique({
     where: { id: item.referencia_id },
     include: {
@@ -1269,6 +1686,12 @@ async function primaryIncidenceForItem(item: any): Promise<{
     ].filter(Boolean) as any[]
     if (conditions.length === 0) return { checked: false, match_id: null, match_title: null, snapshot: [] }
     row = await prisma.impressoras.findFirst({ where: { OR: conditions }, select: { id: true } })
+  } else if (tipo === 'NOTEBOOK' || tipo === 'APARELHO') {
+    const found = await findReferencia(tipo, data)
+    if (!found && !text(data.patrimonio) && !text(data.endereco_mac) && !text(data.referencia_id)) {
+      return { checked: false, match_id: null, match_title: null, snapshot: [] }
+    }
+    row = found ? { id: found.id } : null
   }
 
   if (!row?.id) return { checked: true, match_id: null, match_title: null, snapshot: [] }
@@ -1286,6 +1709,13 @@ async function submittedSnapshotForItem(item: any): Promise<ReviewSnapshotEntry[
   const setor = await setorLabel(data.setor_id)
   const localidade = await localidadeLabel(data.localidade_id)
   const colaboradores = await colaboradorLabels(data.colaboradores_estacao_ids)
+
+  if (data.encontrado === false) {
+    return compactEntries([
+      { label: 'Situação', value: data.nao_conferido ? 'Não conferido pelo técnico' : 'Não encontrado no estoque' },
+      maybeEntry('Observações', data.observacoes),
+    ])
+  }
 
   if (tipo === 'MAQUINA') {
     const explicitEmpty = String(data.colaboradores_estacao ?? '').toLowerCase().includes('sem colaborador')
@@ -1330,6 +1760,29 @@ async function submittedSnapshotForItem(item: any): Promise<ReviewSnapshotEntry[
     ])
   }
 
+  if (tipo === 'NOTEBOOK') {
+    return compactEntries([
+      maybeEntry('Patrimônio', data.patrimonio),
+      maybeEntry('Fabricante', data.fabricante),
+      maybeEntry('Modelo', data.modelo),
+      maybeEntry('Memória', data.memoria),
+      maybeEntry('Armazenamento', data.armazenamento),
+      maybeEntry('Processador', data.processador),
+      maybeEntry('Status', data.status_observado),
+      maybeEntry('Observações', data.observacoes),
+    ])
+  }
+
+  if (tipo === 'APARELHO') {
+    return compactEntries([
+      maybeEntry('Modelo', data.modelo),
+      maybeEntry('MAC', data.endereco_mac),
+      maybeEntry('IP', data.ip),
+      maybeEntry('Status', data.status_observado),
+      maybeEntry('Observações', data.observacoes),
+    ])
+  }
+
   return compactEntries([
     maybeEntry('Patrimônio', data.patrimonio),
     maybeEntry('Marca', data.marca),
@@ -1348,7 +1801,12 @@ async function labelForDiffValue(diff: any, item: any, value: unknown, side: 'at
       if (diff.tipo_diff === 'novo') return 'Sem correspondência primária no inventário'
       return await referenceTitleForItem(item) ?? 'Ativo localizado no inventário'
     }
-    if (diff.tipo_diff === 'ausente') return 'Não informado no checklist'
+    if (diff.tipo_diff === 'ausente') {
+      const data = itemData(item)
+      if (data.nao_conferido) return 'Não conferido pelo técnico'
+      return data.encontrado === false ? 'Não encontrado no estoque' : 'Não informado no checklist'
+    }
+    if (diff.tipo_diff === 'vinculo_divergente') return `${submittedTitleForItem(item)} (estação sem CPU cadastrada)`
     return submittedTitleForItem(item)
   }
 
@@ -1438,6 +1896,7 @@ export async function assimilarRack(solicitacaoId: string, user: UserRef) {
       checklist_tecnico_id: solicitacao.assumido_por,
       checklist_revisor_id: user.id ?? null,
       checklist_validado_em: new Date(),
+      checklist_revisado_em: new Date(),
     } as any,
   })
   await delegate('checklists_validacao_solicitacoes').update({ where: { id: solicitacaoId }, data: { status: 'revisada', revisado_por: user.id ?? null, revisado_em: new Date() } })
@@ -1462,11 +1921,23 @@ export async function assimilarRack(solicitacaoId: string, user: UserRef) {
   return updated
 }
 
+export function tituloSolicitacao(row: any) {
+  if (row?.tipo_solicitacao === 'ESTOQUE') {
+    const itens = itensDoEscopo(row)
+    if (itens.length === 1) return itens[0] === 'NOTEBOOK' ? 'Estoque de notebooks' : 'Estoque de aparelhos'
+    return 'Revisão de estoque'
+  }
+  if (row?.tipo_solicitacao === 'RACK') return row.rack?.nome_switch ?? row.rack_nome ?? 'Rack'
+  return row?.setor?.nome ?? row?.setor_nome ?? 'Setor'
+}
+
 export function sanitizeSolicitacao(row: any) {
   return {
     ...row,
     setor_nome: row.setor?.nome ?? null,
     rack_nome: row.rack?.nome_switch ?? null,
+    titulo: tituloSolicitacao(row),
+    itens_escopo: itensDoEscopo(row),
     tecnico_nome: row.tecnico?.nome ?? null,
     revisor_nome: row.revisor?.nome ?? null,
     assimilada: Boolean(row.assimilada),
@@ -1485,6 +1956,8 @@ function emptyCobertura() {
       ramais: 0,
       monitores: 0,
       impressoras: 0,
+      notebooks: 0,
+      aparelhos: 0,
       racks: 0,
       portas: 0,
     },
@@ -1493,6 +1966,8 @@ function emptyCobertura() {
       ramais: 0,
       monitores: 0,
       impressoras: 0,
+      notebooks: 0,
+      aparelhos: 0,
       rack: 0,
     },
     percentual: 0,
@@ -1522,26 +1997,54 @@ export async function calcularCoberturaSolicitacao(solicitacaoInput: any) {
   }
 
   const localidadeId = solicitacao.checklist?.localidade_id
-  const setorId = solicitacao.setor_id
-  if (!setorId || !localidadeId) return cobertura
+  if (!localidadeId) return cobertura
+  const escopo = itensDoEscopo(solicitacao)
+  const itens: Array<{ tipo_item: string; dados_informados_json: any }> = await delegate('checklists_validacao_itens').findMany({
+    where: { checklist_validacao_solicitacao_id: solicitacao.id },
+    select: { tipo_item: true, dados_informados_json: true },
+  })
 
-  const [maquinas, ramais, impressoras, monitores, itens] = await Promise.all([
-    prisma.maquinas.count({ where: { localidade_id: localidadeId, setor_id: setorId } }),
-    prisma.ramais.count({ where: { localidade_id: localidadeId, setor_id: setorId } }),
-    prisma.impressoras.count({ where: { localidade_id: localidadeId, setor_id: setorId } }),
-    delegate('alocacoes_monitores').count({
-      where: {
-        ativo: true,
-        OR: [
-          { setor_id: setorId },
-          { maquina: { setor_id: setorId, localidade_id: localidadeId } },
-        ],
-      },
-    }),
-    delegate('checklists_validacao_itens').findMany({
-      where: { checklist_validacao_solicitacao_id: solicitacao.id },
-      select: { tipo_item: true },
-    }),
+  if (solicitacao.tipo_solicitacao === 'ESTOQUE') {
+    const previsto = await listarEstoquePrevisto(localidadeId, escopo)
+    cobertura.previsto.notebooks = previsto.notebooks.length
+    cobertura.previsto.aparelhos = previsto.aparelhos.length
+    for (const item of itens) {
+      // Itens gerados automaticamente para o que não foi conferido não contam como preenchimento.
+      if (item.dados_informados_json?.nao_conferido) continue
+      if (item.tipo_item === 'NOTEBOOK') cobertura.preenchido.notebooks += 1
+      if (item.tipo_item === 'APARELHO') cobertura.preenchido.aparelhos += 1
+    }
+    const previstoTotal = cobertura.previsto.notebooks + cobertura.previsto.aparelhos
+    const preenchidoTotal = cobertura.preenchido.notebooks + cobertura.preenchido.aparelhos
+    cobertura.percentual = previstoTotal > 0 ? Math.min(100, Math.round((preenchidoTotal / previstoTotal) * 100)) : 0
+    return cobertura
+  }
+
+  const setorId = solicitacao.setor_id
+  if (!setorId) return cobertura
+  const incluir = (item: string) => escopo.includes(item)
+
+  const [maquinas, ramais, impressoras, monitores] = await Promise.all([
+    incluir('MAQUINA') || incluir('MONITOR') || incluir('RAMAL') || incluir('COLABORADOR')
+      ? prisma.maquinas.count({ where: { localidade_id: localidadeId, setor_id: setorId } })
+      : Promise.resolve(0),
+    incluir('RAMAL') ? prisma.ramais.count({ where: { localidade_id: localidadeId, setor_id: setorId } }) : Promise.resolve(0),
+    !incluir('IMPRESSORA')
+      ? Promise.resolve(0)
+      : solicitacao.restringir_impressoras
+        ? prisma.impressoras.count({ where: { id: { in: solicitacao.impressora_ids ?? [] } } })
+        : prisma.impressoras.count({ where: { localidade_id: localidadeId, setor_id: setorId } }),
+    incluir('MONITOR')
+      ? delegate('alocacoes_monitores').count({
+        where: {
+          ativo: true,
+          OR: [
+            { setor_id: setorId },
+            { maquina: { setor_id: setorId, localidade_id: localidadeId } },
+          ],
+        },
+      })
+      : Promise.resolve(0),
   ])
 
   cobertura.previsto.maquinas = maquinas

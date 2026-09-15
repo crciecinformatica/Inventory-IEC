@@ -24,6 +24,7 @@ import type { Aparelho, PaginatedResponse } from "@/types";
 import { CriarAparelhoModal } from "@/components/modals/criar-aparelho-modal";
 import { useSearchParams } from "next/navigation";
 import { useInspectNavigation } from "@/hooks/use-inspect-navigation";
+import { UltimaRevisaoButton } from "@/components/checklists/ultima-revisao-popup";
 
 type ActiveOverviewFilter = OverviewFilter & {
   key: string;
@@ -407,6 +408,12 @@ export default function AparelhosPage() {
   const columns = useMemo<ColumnDef<Aparelho>[]>(
     () => [
       ...baseColumns,
+      {
+        id: "ultima_revisao",
+        header: "Última revisão",
+        enableSorting: false,
+        cell: ({ row }) => <UltimaRevisaoButton tipo="APARELHO" id={row.original.id} revisadoEm={row.original.checklist_revisado_em} />,
+      },
       {
         id: "forum",
         header: "Fórum",

@@ -19,6 +19,7 @@ import { Search, Plus } from 'lucide-react'
 import { useSearchParams } from 'next/navigation'
 import type { Maquina, PaginatedResponse } from '@/types'
 import { useInspectNavigation } from '@/hooks/use-inspect-navigation'
+import { UltimaRevisaoButton } from '@/components/checklists/ultima-revisao-popup'
 
 type ActiveOverviewFilter = OverviewFilter & {
   key: string
@@ -359,6 +360,12 @@ export default function MaquinasPage() {
           </span>
         )
       },
+    },
+    {
+      id: 'ultima_revisao',
+      header: 'Última revisão',
+      enableSorting: false,
+      cell: ({ row }) => <UltimaRevisaoButton tipo='MAQUINA' id={row.original.id} revisadoEm={row.original.checklist_revisado_em} fallbackDate={row.original.data_revisao} />,
     },
     {
       id: 'forum',

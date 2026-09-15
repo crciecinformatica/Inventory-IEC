@@ -22,9 +22,9 @@ import { SetorSelect } from "@/components/modals/setor-select";
 import { LocalidadeSelect } from "@/components/modals/localidade-select";
 import { Search, Plus } from "lucide-react";
 import { useInspectNavigation } from "@/hooks/use-inspect-navigation";
-import { formatDate } from "@/lib/utils";
 
 import type { Impressora, PaginatedResponse } from "@/types";
+import { UltimaRevisaoButton } from "@/components/checklists/ultima-revisao-popup";
 
 type ActiveOverviewFilter = OverviewFilter & {
   key: string;
@@ -434,7 +434,14 @@ export default function ImpressorasPage() {
         accessorKey: "revisao",
         header: "Última revisão",
         enableSorting: true,
-        cell: ({ getValue }) => formatDate(getValue() as string | null),
+        cell: ({ row }) => (
+          <UltimaRevisaoButton
+            tipo="IMPRESSORA"
+            id={row.original.id}
+            revisadoEm={row.original.checklist_revisado_em}
+            fallbackDate={row.original.revisao}
+          />
+        ),
       },
 
       {

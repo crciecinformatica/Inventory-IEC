@@ -27,6 +27,7 @@ import { Search, Plus } from "lucide-react";
 import { useInspectNavigation } from "@/hooks/use-inspect-navigation";
 
 import type { Rack, PaginatedResponse } from "@/types";
+import { UltimaRevisaoButton } from "@/components/checklists/ultima-revisao-popup";
 
 type ActiveOverviewFilter = OverviewFilter & {
   key: string;
@@ -160,6 +161,12 @@ export default function RacksPage() {
             </div>
           );
         },
+      },
+      {
+        id: "ultima_revisao",
+        header: "Última revisão",
+        enableSorting: false,
+        cell: ({ row }) => <UltimaRevisaoButton tipo="RACK" id={row.original.id} revisadoEm={row.original.checklist_revisado_em} />,
       },
       {
         id: "forum",

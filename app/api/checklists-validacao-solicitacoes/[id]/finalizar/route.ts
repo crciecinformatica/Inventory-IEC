@@ -85,7 +85,7 @@ async function handleInternalFinalizar({ params }: Props) {
     const { usuario_id, usuario_nome } = await getAuditSession()
     const isAdmin = isPrivilegedProfile((session.user as any)?.perfil)
     const atual = await ensureSolicitacaoEditable(id, { id: usuario_id, nome: usuario_nome }, isAdmin)
-    if (atual.tipo_solicitacao === 'SETOR') await gerarDiffSolicitacao(id)
+    if (atual.tipo_solicitacao === 'SETOR' || atual.tipo_solicitacao === 'ESTOQUE') await gerarDiffSolicitacao(id)
     const now = new Date()
     const shouldAssignOnFinish = !atual.assumido_por && Boolean(usuario_id)
     if (shouldAssignOnFinish) await ensureChecklistTecnicoApto(usuario_id)
